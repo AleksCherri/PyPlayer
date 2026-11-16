@@ -1,0 +1,6 @@
+PySide6
+miniaudio  # PyPI-пакет python-miniaudio не существует; биндинги называются miniaudio
+numpy
+scipy
+mutagen
+pytest==8.3.5  # 9.x падает на Python 3.10 (INTERNALERROR NodeId._str_cache)

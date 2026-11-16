@@ -1,0 +1,6 @@
+{
+  "music_dir": "music",
+  "max_playlist_depth": 5,
+  "smart_shuffle_default": "off",
+  "shuffle_temperature": 0.5
+}
