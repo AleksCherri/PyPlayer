@@ -80,6 +80,9 @@ def flatten_playlist(
     """
     if playlist_id not in playlists:
         return []
+    # Рекурсивный _flatten не должен упереться в sys.getrecursionlimit()
+    # раньше, чем в max_depth из конфига (глубокие цепочки плейлистов).
+    max_depth = min(max_depth, 900)
     tracks: list[int] = []
     _flatten(playlist_id, playlists, items, max_depth,
              path=frozenset({playlist_id}), depth=1,

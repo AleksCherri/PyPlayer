@@ -608,6 +608,10 @@ class EventBridge(QObject):
         self._timer.timeout.connect(self.drain)
         self._timer.start()
 
+    def shutdown(self) -> None:
+        """Останавливает таймер выгрузки (при завершении приложения)."""
+        self._timer.stop()
+
     def drain(self) -> None:
         """Выгружает очередь событий; вызывается только в GUI-потоке."""
         while True:

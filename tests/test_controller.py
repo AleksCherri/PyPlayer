@@ -1,19 +1,18 @@
 """Тесты PlaybackController: статистика, очередь, signals, навигация."""
+import random
 from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QCoreApplication
 
-from services.audio.engine import FakeSink, PlaybackEngine
+from services.audio.engine import FakeSink, PlaybackEngine, TrackFinished
 from services.controller import PlaybackController
 from services.db import Database
 from services.queue import (
     ORDER_RANDOM_NO_REPEAT,
     ORDER_SEQUENTIAL,
     ORDER_SEQUENTIAL_LOOP,
-    PlaybackQueue,
 )
-import random
 
 
 @pytest.fixture(scope='module')
@@ -232,10 +231,9 @@ def test_random_playlist_respects_seed(
 
 
 def _make_expected_order(ids: list[int], seed: int) -> list[int]:
-    queue = PlaybackQueue(ids, ORDER_RANDOM_NO_REPEAT, random.Random(seed))
-    order = []
-    while (track_id := queue.next()) is not None:
-        order.append(track_id)
+    """Независимая проверка: ожидаемый порядок = shuffle того же seed."""
+    order = list(ids)
+    random.Random(seed).shuffle(order)
     return order
 
 
@@ -299,3 +297,101 @@ def test_single_track_play_clears_queue(
     _finish_active_track(engine, sink, controller)
 
     assert controller.current_track is None  # не прыгнуло обратно в плейлист
+
+
+def test_prev_at_start_does_not_flush_listening_time(
+        qapp, db: Database, make_controller, make_wav) -> None:
+    """Регрессия: prev() в начале очереди не должен обнулять счётчик.
+
+    Раньше _flush_current() выполнялся до проверки prev() на None: после
+    неудачного prev() флаг _stats_flushed оставался True, и дослушанные
+    0.2 с после него терялись.
+    """
+    t1 = _add_track(db, make_wav(Path('prev1.wav')), 'Prev1')
+    t2 = _add_track(db, make_wav(Path('prev2.wav')), 'Prev2')
+    playlist_id = _add_playlist(db, 'Prev', ORDER_SEQUENTIAL,
+                                [('track', t1), ('track', t2)])
+    controller, _, sink = make_controller()
+
+    controller.play_playlist(playlist_id)
+    assert controller.current_track['id'] == t1
+    sink.run(0.2)
+    controller.prev_track()  # начала очереди — ничего не меняем
+    sink.run(0.2)
+    controller.stop()
+
+    row = _stats(db, t1)
+    assert row['play_count'] == 1
+    assert row['total_listened_sec'] == pytest.approx(0.4, abs=0.05)
+
+
+def test_stale_track_finished_ignored(
+        qapp, db: Database, make_controller, make_wav) -> None:
+    """Устаревшее событие от предыдущего трека не завершает текущий."""
+    t1 = _add_track(db, make_wav(Path('old.wav')), 'Old')
+    t2 = _add_track(db, make_wav(Path('new.wav')), 'New')
+    controller, engine, sink = make_controller()
+
+    controller.play(t1)
+    sink.run_until_finished()  # в очереди — событие о конце t1
+    controller.play(t2)        # переключились на t2
+    engine.event_queue.put(TrackFinished(path=Path('nonexistent.wav')))
+    controller.bridge.drain()  # оба устаревших события пришли в GUI-поток
+
+    assert controller.current_track['id'] == t2
+    assert _stats(db, t2) is None
+    _finish_active_track(engine, sink, controller)
+    assert _stats(db, t2)['play_count'] == 1
+
+
+def test_corrupt_track_skipped_in_playlist(
+        qapp, db: Database, make_controller, make_wav, tmp_path: Path) -> None:
+    """Битый файл в плейлисте пропускается при автопереходе."""
+    good = _add_track(db, make_wav(Path('good.wav')), 'Good')
+    broken_path = tmp_path / 'broken.wav'
+    broken_path.write_bytes(b'\x00\x01garbage not a wav')
+    broken = _add_track(db, broken_path, 'Broken')
+    last = _add_track(db, make_wav(Path('last.wav')), 'Last')
+    playlist_id = _add_playlist(db, 'Mixed', ORDER_SEQUENTIAL,
+                                [('track', good), ('track', broken),
+                                 ('track', last)])
+    controller, engine, sink = make_controller()
+
+    controller.play_playlist(playlist_id)
+    _finish_active_track(engine, sink, controller)
+
+    assert controller.current_track['id'] == last
+    assert _stats(db, broken) is None
+
+
+def test_playlist_changed_signal(
+        qapp, db: Database, make_controller, make_wav) -> None:
+    track_id = _add_track(db, make_wav(Path('sig.wav')), 'Sig')
+    playlist_id = _add_playlist(db, 'MyList', ORDER_SEQUENTIAL,
+                                [('track', track_id)])
+    controller, _, _ = make_controller()
+    seen: list[tuple[int, str]] = []
+    controller.playlistChanged.connect(
+        lambda pid, name: seen.append((pid, name)))
+
+    controller.play_playlist(playlist_id)
+    assert seen == [(playlist_id, 'MyList')]
+
+
+def test_finish_then_manual_next_no_double_flush(
+        qapp, db: Database, make_controller, make_wav) -> None:
+    """Повторный next после конца трека не удваивает статистику."""
+    t1 = _add_track(db, make_wav(Path('dbl1.wav')), 'Dbl1')
+    t2 = _add_track(db, make_wav(Path('dbl2.wav')), 'Dbl2')
+    playlist_id = _add_playlist(db, 'Dbl', ORDER_SEQUENTIAL,
+                                [('track', t1), ('track', t2)])
+    controller, engine, sink = make_controller()
+
+    controller.play_playlist(playlist_id)
+    _finish_active_track(engine, sink, controller)  # t1 -> t2
+    controller.next_track()   # t2 только что запущен, затем конец очереди
+    controller.stop()         # повторный stop не должен ничего записать
+
+    row = _stats(db, t1)
+    assert row['play_count'] == 1
+    assert row['total_listened_sec'] == pytest.approx(0.5, abs=0.05)

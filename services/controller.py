@@ -63,6 +63,7 @@ class PlaybackController(QObject):
         super().__init__(parent)
         self._db = db
         self._engine = engine
+        #Phase 4: передавать int(load_config(...)['max_playlist_depth'])
         self._max_depth = max_depth
         self._rng = random.Random(seed)
         self._queue: PlaybackQueue | None = None
@@ -149,13 +150,20 @@ class PlaybackController(QObject):
         self._advance()
 
     def prev_track(self) -> None:
-        """Предыдущий трек по режиму порядка (None в начале — ничего)."""
+        """Предыдущий трек по режиму порядка (None в начале — ничего).
+
+        Сначала спрашиваем очередь: если previous отсутствует, трек НЕ
+        меняется — значит и сбрасывать его статистику нельзя (иначе
+        последующее прослушивание не попадёт в БД из-за _stats_flushed).
+        prev() меняет _pos только при успехе, поэтому сброс после него
+        безопасен.
+        """
         if self._queue is None:
             return
-        self._flush_current()
         track_id = self._queue.prev()
         if track_id is None:
             return
+        self._flush_current()
         self._start_track_id(track_id)
 
     def set_volume(self, volume: float) -> None:
@@ -167,6 +175,7 @@ class PlaybackController(QObject):
         self._flush_current()
         self._stop_playback()
         self._poll_timer.stop()
+        self.bridge.shutdown()  # больше не выгружаем события при выходе
 
     # --- внутреннее ---
 

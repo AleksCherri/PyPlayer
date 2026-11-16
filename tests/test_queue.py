@@ -134,11 +134,6 @@ def test_two_queues_same_seed_identical_sequential() -> None:
         [repeat_b.next() for _ in range(8)]
 
 
-def _make_queue(tracks: list[int], mode: str, seed: int):
-    from services.queue import PlaybackQueue
-    return PlaybackQueue(tracks, mode, random.Random(seed))
-
-
 def test_sequential_mode() -> None:
     queue = _make_queue([10, 20, 30], ORDER_SEQUENTIAL, seed=1)
     assert [queue.next() for _ in range(4)] == [10, 20, 30, None]
