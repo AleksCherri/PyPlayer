@@ -88,6 +88,20 @@ def test_invalid_values_fall_back_to_defaults(tmp_path: Path) -> None:
     assert on_disk == config
 
 
+def test_unhashable_and_nonfinite_values_fall_back(tmp_path: Path) -> None:
+    path = tmp_path / 'config.json'
+    bad = {
+        "smart_shuffle_default": {},       # dict: {} in frozenset -> TypeError
+        "shuffle_temperature": float('inf'),  # json.load принимает Infinity
+    }
+    path.write_text(json.dumps(bad), encoding='utf-8')
+
+    config = load_config(path)
+
+    assert config["smart_shuffle_default"] == DEFAULT_CONFIG["smart_shuffle_default"]
+    assert config["shuffle_temperature"] == DEFAULT_CONFIG["shuffle_temperature"]
+
+
 def test_unknown_extra_keys_are_preserved(tmp_path: Path) -> None:
     path = tmp_path / 'config.json'
     data = dict(DEFAULT_CONFIG, custom_note="мои заметки")

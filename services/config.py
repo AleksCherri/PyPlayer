@@ -6,6 +6,7 @@
 дефолтными. Неизвестные ключи сохраняются как есть.
 """
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -43,12 +44,15 @@ def _validate_key(key: str, value: Any) -> Any:
             return default
         return value if isinstance(value, int) and value >= 0 else default
     if key == 'smart_shuffle_default':
-        return value if value in _SHUFFLE_MODES else default
+        # isinstance-защита обязательна: {} in frozenset(...) -> TypeError
+        return value if isinstance(value, str) and value in _SHUFFLE_MODES \
+            else default
     if key == 'shuffle_temperature':
         if isinstance(value, bool):
             return default
-        return float(value) \
-            if isinstance(value, (int, float)) and value > 0 else default
+        # json.load принимает литералы Infinity/-Infinity/NaN — отвергаем их
+        return float(value) if isinstance(value, (int, float)) \
+            and math.isfinite(value) and value > 0 else default
     return value  # неизвестные ключи сохраняются без изменений
 
 
