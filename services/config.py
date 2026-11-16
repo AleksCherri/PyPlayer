@@ -2,9 +2,11 @@
 
 Конфиг хранится в data/config.json. При первом запуске (или при
 повреждённом файле) создаётся с значениями по умолчанию; отсутствующие
-ключи дозаполняются значениями по умолчанию.
+ключи дозаполняются, некорректные значения известных ключей заменяются
+дефолтными. Неизвестные ключи сохраняются как есть.
 """
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -15,38 +17,69 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "shuffle_temperature": 0.5,
 }
 
+_SHUFFLE_MODES = frozenset({"off", "direct", "inverse"})
+
 
 def _read(path: Path) -> Any:
-    """Читает JSON-файл; возвращает None, если файла нет или он повреждён."""
+    """Читает JSON-файл; возвращает None, если файла нет или он повреждён.
+
+    ValueError покрывает и json.JSONDecodeError, и UnicodeDecodeError
+    (файл не в UTF-8, бинарный мусор и т.п.).
+    """
     try:
         with path.open('r', encoding='utf-8') as fp:
             return json.load(fp)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return None
+
+
+def _validate_key(key: str, value: Any) -> Any:
+    """Валидирует один ключ конфига; некорректное значение -> дефолт."""
+    default = DEFAULT_CONFIG.get(key)
+    if key == 'music_dir':
+        return value if isinstance(value, str) else default
+    if key == 'max_playlist_depth':
+        if isinstance(value, bool):
+            return default
+        return value if isinstance(value, int) and value >= 0 else default
+    if key == 'smart_shuffle_default':
+        return value if value in _SHUFFLE_MODES else default
+    if key == 'shuffle_temperature':
+        if isinstance(value, bool):
+            return default
+        return float(value) \
+            if isinstance(value, (int, float)) and value > 0 else default
+    return value  # неизвестные ключи сохраняются без изменений
 
 
 def load_config(path: Path) -> dict[str, Any]:
     """Загружает конфиг из ``path``; при необходимости создаёт его.
 
     Если файла нет, он повреждён или не является словарём — записывает
-    значения по умолчанию. Отсутствующие ключи дозаполняются.
+    значения по умолчанию (неудача записи не фатальна: возвращается
+    конфиг в памяти). Отсутствующие ключи дозаполняются, некорректные
+    значения известных ключей заменяются дефолтными.
     """
     data = _read(path)
-    config = dict(DEFAULT_CONFIG)
+    config: dict[str, Any] = dict(DEFAULT_CONFIG)
 
     if isinstance(data, dict):
         for key, value in data.items():
-            config[key] = value
-        if all(config[key] == data.get(key) for key in DEFAULT_CONFIG):
-            return config  # файл полный и корректный — не перезаписываем
+            config[key] = _validate_key(key, value)
 
-    _write(path, config)
+    if data != config:  # файла нет / он неполный или повреждён -> пересоздаём
+        _write(path, config)
     return config
 
 
-def _write(path: Path, config: dict[str, Any]) -> None:
-    """Записывает конфиг в ``path``, создавая родительский каталог."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open('w', encoding='utf-8') as fp:
-        json.dump(config, fp, ensure_ascii=False, indent=2)
-        fp.write('\n')
+def _write(path: Path, config: dict[str, Any]) -> bool:
+    """Записывает конфиг в ``path``; False при ошибке (путь занят и т.п.)."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('w', encoding='utf-8') as fp:
+            json.dump(config, fp, ensure_ascii=False, indent=2)
+            fp.write('\n')
+    except OSError as exc:
+        print(f'Не удалось записать {path}: {exc}', file=sys.stderr)
+        return False
+    return True

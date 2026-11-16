@@ -1,5 +1,5 @@
 PySide6
-miniaudio  # PyPI-пакет python-miniaudio не существует; биндинги называются miniaudio
+miniaudio==1.71  # PyPI-пакет python-miniaudio не существует; биндинги называются miniaudio
 numpy
 scipy
 mutagen

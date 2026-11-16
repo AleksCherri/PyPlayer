@@ -4,4 +4,5 @@ __pycache__/
 *.log
 .pytest_cache/
 data/pyplayer.db
+data/config.json
 music/
