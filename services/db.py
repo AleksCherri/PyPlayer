@@ -74,6 +74,12 @@ CREATE TABLE IF NOT EXISTS playlist_items (
     UNIQUE (playlist_id, position)
 );
 
+-- Аддитивное изменение в рамках v1: индекс создаётся и на свежих БД
+-- (вместе с записью schema_version = 1), и на уже существующих v1-БД
+-- идемпотентно (IF NOT EXISTS).
+CREATE INDEX IF NOT EXISTS idx_playlist_items_playlist
+    ON playlist_items (playlist_id);
+
 CREATE TABLE IF NOT EXISTS migrations (
     schema_version INTEGER PRIMARY KEY,
     applied_at     TEXT    NOT NULL
@@ -123,10 +129,24 @@ class Database:
     def _migrate(self) -> None:
         """Создаёт таблицы (идемпотентно) и фиксирует версию схемы."""
         conn = self.get_connection()
+        # Версию проверяем ДО DDL: нельзя выполнять схему поверх БД,
+        # которая новее поддерживаемой.
+        has_migrations = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'migrations'").fetchone() is not None
+        current: int | None = None
+        if has_migrations:
+            row = conn.execute(
+                'SELECT MAX(schema_version) FROM migrations').fetchone()
+            current = row[0]
+            if current is not None and current > SCHEMA_VERSION:
+                self.close()
+                raise RuntimeError(
+                    f'База данных версии {current} новее поддерживаемой '
+                    f'версии {SCHEMA_VERSION}')
+
         conn.executescript(_SCHEMA)
-        row = conn.execute(
-            'SELECT MAX(schema_version) FROM migrations').fetchone()
-        current = row[0]
+
         if current is None:
             with self.transaction() as tx:
                 tx.execute(
@@ -134,7 +154,3 @@ class Database:
                     'VALUES (?, strftime(\'%Y-%m-%dT%H:%M:%fZ\', \'now\'))',
                     (SCHEMA_VERSION,),
                 )
-        elif current > SCHEMA_VERSION:
-            raise RuntimeError(
-                f'База данных версии {current} новее поддерживаемой '
-                f'версии {SCHEMA_VERSION}')

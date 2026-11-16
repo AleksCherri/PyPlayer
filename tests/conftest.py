@@ -1,4 +1,5 @@
 """Общие фикстуры тестов: БД в tmp-каталоге и генератор wav-файлов."""
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,7 @@ from services.db import Database
 
 
 @pytest.fixture
-def db(tmp_path: Path):
+def db(tmp_path: Path) -> Iterator[Database]:
     """База данных в tmp-каталоге; закрывается после теста."""
     database = Database(tmp_path / 'pyplayer.db')
     yield database
@@ -16,7 +17,7 @@ def db(tmp_path: Path):
 
 
 @pytest.fixture
-def make_wav():
+def make_wav() -> Callable[..., Path]:
     """Фабрика коротких wav-файлов (моно, 16 бит)."""
 
     def factory(path: Path, duration: float = 0.5,

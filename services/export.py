@@ -13,13 +13,18 @@ _SELECTS: dict[str, str] = {
 
 
 def export_to_json(db: Database, out_path: Path) -> Path:
-    """Пишет полный дамп БД в ``out_path``; возвращает путь к файлу."""
-    conn = db.get_connection()
-    data = {
-        'schema_version': SCHEMA_VERSION,
-        **{name: [dict(row) for row in conn.execute(sql)]
-           for name, sql in _SELECTS.items()},
-    }
+    """Пишет полный дамп БД в ``out_path``; возвращает путь к файлу.
+
+    Чтение всех таблиц — в одной отложенной транзакции, чтобы дамп был
+    согласованным снимком (в WAL-режиме каждый autocommit-SELECT видел бы
+    свою собственную версию данных).
+    """
+    with db.transaction() as conn:
+        data = {
+            'schema_version': SCHEMA_VERSION,
+            **{name: [dict(row) for row in conn.execute(sql)]
+               for name, sql in _SELECTS.items()},
+        }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open('w', encoding='utf-8') as fp:
         json.dump(data, fp, ensure_ascii=False, indent=2)

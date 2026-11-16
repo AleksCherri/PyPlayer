@@ -53,6 +53,7 @@ class TrackModel(QAbstractListModel):
 
 
 _ROLE_FIELDS: dict[int, str] = {
+    Qt.ItemDataRole.DisplayRole: 'title',
     TrackModel.ID_ROLE: 'id',
     TrackModel.PATH_ROLE: 'path',
     TrackModel.TITLE_ROLE: 'title',

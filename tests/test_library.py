@@ -1,6 +1,7 @@
 """Тесты сканера библиотеки (services/library.py) на wav из stdlib `wave`."""
 import json
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,54 @@ def test_rescan_is_idempotent(db: Database, make_wav, tmp_path: Path) -> None:
     stats = db.get_connection().execute(
         'SELECT COUNT(*) FROM play_stats').fetchone()[0]
     assert stats == 2
+
+
+def test_updated_file_refreshes_fingerprint_same_path(
+        db: Database, make_wav, tmp_path: Path) -> None:
+    """Ветка UPDATE по известному path: тот же id, отпечаток обновлён."""
+    music = tmp_path / 'music'
+    wav = make_wav(music / 'song.wav')
+    scan_library(db, music)
+    before = db.get_connection().execute(
+        'SELECT id, fingerprint FROM tracks').fetchone()
+
+    os.utime(wav, (1_700_000_000, 1_700_000_000))  # меняет mtime -> fingerprint
+    scan_library(db, music)
+
+    after = db.get_connection().execute(
+        'SELECT id, fingerprint FROM tracks').fetchall()
+    assert len(after) == 1                          # дубликата нет
+    assert after[0]['id'] == before['id']           # та же карточка
+    assert after[0]['fingerprint'] != before['fingerprint']
+
+
+def test_retagged_file_updates_title_same_path(db: Database, tmp_path: Path) -> None:
+    """Ветка UPDATE по известному path: теги перечитываются, id не меняется."""
+    music = tmp_path / 'music'
+    music.mkdir(parents=True, exist_ok=True)
+    path = music / 'tagged.mp3'
+    frame = b'\xff\xfb\x90\x00' + b'\x00' * 413  # минимальный MPEG-1 L3 фрейм
+    path.write_bytes(frame * 38)
+
+    from mutagen.id3 import ID3, TIT2
+    tags = ID3()
+    tags.add(TIT2(encoding=3, text='Старое имя'))
+    tags.save(str(path), v2_version=3)
+    scan_library(db, music)
+    before = db.get_connection().execute(
+        'SELECT id, title FROM tracks').fetchone()
+    assert before['title'] == 'Старое имя'
+
+    tags = ID3(str(path))
+    tags.add(TIT2(encoding=3, text='Новое имя'))
+    tags.save(str(path), v2_version=3)
+    scan_library(db, music)
+
+    after = db.get_connection().execute(
+        'SELECT id, title FROM tracks').fetchall()
+    assert len(after) == 1
+    assert after[0]['id'] == before['id']
+    assert after[0]['title'] == 'Новое имя'
 
 
 def test_rename_survives_via_fingerprint(db: Database, make_wav,

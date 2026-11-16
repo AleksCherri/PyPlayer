@@ -28,6 +28,13 @@ def test_migrations_records_schema_version(db: Database) -> None:
     assert row['applied_at']
 
 
+def test_playlist_items_index_exists(db: Database) -> None:
+    row = db.get_connection().execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index' "
+        "AND name = 'idx_playlist_items_playlist'").fetchone()
+    assert row is not None
+
+
 def test_migrate_is_idempotent(tmp_path: Path) -> None:
     db_path = tmp_path / 'pyplayer.db'
     first = Database(db_path)

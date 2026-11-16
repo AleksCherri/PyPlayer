@@ -9,6 +9,7 @@ path не встретился в текущем скане).
 import hashlib
 import logging
 import sqlite3
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +113,18 @@ def fetch_tracks(db: Database) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def _take_orphan(orphans: dict[str, deque[int]],
+                 fingerprint: str) -> int | None:
+    """Достаёт одного сироту по fingerprint; каждый id употребляется один раз."""
+    queue = orphans.get(fingerprint)
+    if not queue:
+        return None
+    orphan_id = queue.popleft()
+    if not queue:
+        del orphans[fingerprint]
+    return orphan_id
+
+
 def scan_library(db: Database, music_dir: Path | None) -> int:
     """Сканирует ``music_dir`` и upsert'ит треки; возвращает число файлов.
 
@@ -135,10 +148,13 @@ def scan_library(db: Database, music_dir: Path | None) -> int:
             'SELECT id, path, fingerprint FROM tracks').fetchall()
         scanned_paths = {str(file.resolve()) for file in files}
         known_paths = {row['path'] for row in rows}
-        orphans_by_fingerprint = {
-            row['fingerprint']: row['id']
-            for row in rows if row['path'] not in scanned_paths
-        }
+        # fingerprint -> очередь id сирот: дубликаты отпечатков не теряются,
+        # каждый сирота может быть употреблён не более одного раза.
+        orphans_by_fingerprint: dict[str, deque[int]] = {}
+        for row in rows:
+            if row['path'] not in scanned_paths:
+                orphans_by_fingerprint.setdefault(
+                    row['fingerprint'], deque()).append(row['id'])
 
         for file in files:
             path_str = str(file.resolve())
@@ -161,8 +177,8 @@ def scan_library(db: Database, music_dir: Path | None) -> int:
                     'format = ? WHERE path = ?',
                     (*values, path_str),
                 )
-            elif (orphan_id := orphans_by_fingerprint.pop(fingerprint, None)) \
-                    is not None:
+            elif (orphan_id := _take_orphan(orphans_by_fingerprint,
+                                            fingerprint)) is not None:
                 # файл переименован/перенесён: fingerprint совпал с сиротой
                 tx.execute(
                     'UPDATE tracks SET path = ?, fingerprint = ?, '
