@@ -187,6 +187,7 @@ class FakeSink(AudioSink):
         self.sample_rate = sample_rate
         self.channels = channels
         self._generator = generator_factory()
+        self.finished = False  # переиспользование sink между треками
         try:
             # priming, как в miniaudio
             self._pending_chunk = next(self._generator)
