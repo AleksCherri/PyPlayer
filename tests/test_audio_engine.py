@@ -1,5 +1,6 @@
 """Тесты аудио-движка (services/audio/engine.py) с FakeSink — CI-безопасно."""
 import wave
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -7,6 +8,7 @@ import pytest
 from PySide6.QtCore import QCoreApplication
 
 from services.audio.engine import (
+    AudioEngineError,
     EventBridge,
     FakeSink,
     PlaybackEngine,
@@ -24,7 +26,7 @@ def qapp() -> QCoreApplication:
 
 
 @pytest.fixture
-def make_wav_file(tmp_path: Path):
+def make_wav_file(tmp_path: Path) -> Callable[..., Path]:
     """Фабрика wav с ненулевым содержимым (пила в int16)."""
 
     def factory(name: str = 'a.wav', seconds: float = 1.0,
@@ -44,7 +46,7 @@ def make_wav_file(tmp_path: Path):
 
 
 @pytest.fixture
-def make_engine():
+def make_engine() -> Callable[[], tuple[PlaybackEngine, FakeSink]]:
     """Движок с одним FakeSink; возвращает пару (engine, sink)."""
     created: list[PlaybackEngine] = []
 
@@ -226,7 +228,9 @@ def test_volume_nan_is_ignored(make_engine, make_wav_file) -> None:
 
 def test_seek_to_middle_accumulator_from_seek(make_engine,
                                               make_wav_file) -> None:
-    """После seek аккумулятор считает только прослушанное после seek."""
+    """Аккумулятор копится непрерывно и не перескакивает на позицию seek
+    (никакого «доматывания» середины трека — только реально сыгранные
+    секунды до и после seek)."""
     wav = make_wav_file(seconds=1.0)
     engine, sink = make_engine()
 
@@ -291,3 +295,109 @@ def test_event_bridge_drains_queue(qapp: QCoreApplication, make_engine,
 
     bridge.drain()  # очередь пуста — сигнала больше нет
     assert len(received) == 1
+
+
+def test_fractional_budget_terminates(make_engine, make_wav_file) -> None:
+    """Регрессия вечного спина: 8001 фрейм, tempo 2.0 — дробный бюджет.
+
+    Бюджет ceil(8001/2) = 4001; после последнего неполного шага финиш
+    обязан сработать, иначе _produce крутится с зажатой блокировкой.
+    """
+    wav = make_wav_file(seconds=8001 / _RATE)
+    engine, sink = make_engine()
+
+    engine.play(PlaybackTrack(path=wav, rate_mode='tempo_only', speed=2.0))
+    sink.run_until_finished()
+
+    assert sink.finished
+    assert engine.played_seconds() == pytest.approx(0.5, abs=0.05)
+    assert len(_drain_finished(engine)) == 1
+
+
+def test_zero_length_track_finishes_immediately(make_engine,
+                                                tmp_path: Path) -> None:
+    """Регрессия StopIteration: пустой wav — генератор отдаёт пустой чанк."""
+    path = tmp_path / 'empty.wav'
+    with wave.open(str(path), 'wb') as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(_RATE)
+        wav.writeframes(b'')
+
+    engine, sink = make_engine()
+    engine.play(PlaybackTrack(path=path))
+    sink.run(0.1)
+
+    assert sink.finished
+    assert len(_drain_finished(engine)) == 1
+
+
+def test_trim_start_beyond_file_finishes_immediately(
+        make_engine, make_wav_file) -> None:
+    """trim_start за концом файла: вырожденное окно, без StopIteration."""
+    wav = make_wav_file(seconds=1.0)
+    engine, sink = make_engine()
+
+    engine.play(PlaybackTrack(path=wav, trim_start_sec=2.0))
+    sink.run(0.1)
+
+    assert sink.finished
+    assert len(_drain_finished(engine)) == 1
+
+
+def test_play_missing_file_raises_engine_error(make_engine,
+                                               tmp_path: Path) -> None:
+    engine, _ = make_engine()
+
+    with pytest.raises(AudioEngineError):
+        engine.play(PlaybackTrack(path=tmp_path / 'missing.wav'))
+
+
+def test_play_corrupt_file_raises_engine_error(make_engine,
+                                               tmp_path: Path) -> None:
+    path = tmp_path / 'broken.wav'
+    path.write_bytes(b'\x00\x01\x02garbage not a wav')
+    engine, _ = make_engine()
+
+    with pytest.raises(AudioEngineError):
+        engine.play(PlaybackTrack(path=path))
+
+
+def test_is_playing_flags(make_engine, make_wav_file) -> None:
+    wav = make_wav_file(seconds=1.0)
+    engine, sink = make_engine()
+
+    engine.play(PlaybackTrack(path=wav))
+    assert engine.is_playing() is True
+
+    engine.pause()
+    assert engine.is_playing() is False
+
+    engine.resume()
+    assert engine.is_playing() is True
+
+    engine.stop()
+    assert engine.is_playing() is False
+
+
+def test_seek_discards_stale_buffer(make_engine, make_wav_file) -> None:
+    """После seek старый буфер не доигрывается: sink перезапущен на новой
+    позиции, первые сэмплы после restart — содержимое с позиции seek."""
+    wav = make_wav_file(seconds=1.0)
+    engine, sink = make_engine()
+
+    engine.play(PlaybackTrack(path=wav))
+    sink.run(0.2)
+    collected_before = len(sink.collected_frames)
+
+    engine.seek(0.5)
+    sink.run(0.2)
+
+    fresh = sink.collected_frames[collected_before:]
+    assert len(fresh) > 0
+    with wave.open(str(wav), 'rb') as wav_file:
+        original = np.frombuffer(wav_file.readframes(-1), dtype=np.int16)
+    # свежий prime-чанк (128 фреймов) — это исходные сэмплы с 0.5 c
+    expected = original[int(0.5 * _RATE):int(0.5 * _RATE) + len(fresh[:128])]
+    assert np.array_equal(fresh[:len(expected)].astype(np.int32),
+                          expected.astype(np.int32))

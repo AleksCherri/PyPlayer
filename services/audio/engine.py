@@ -61,6 +61,10 @@ _OLA_GRAIN = 4096          # длина зерна OLA, фреймов
 _OLA_HOP = _OLA_GRAIN // 2  # шаг синтеза (50% перекрытие)
 
 
+class AudioEngineError(Exception):
+    """Ошибка воспроизведения: файл не найден, битый или не декодируется."""
+
+
 @dataclass
 class PlaybackTrack:
     """Трек для воспроизведения: без привязки к БД (загружается из строки)."""
@@ -132,17 +136,28 @@ class MiniaudioSink(AudioSink):
 
     def start(self, generator_factory: Callable[[], Iterator[bytes]],
               sample_rate: int, channels: int) -> None:
-        self.stop()
-        device = miniaudio.PlaybackDevice(
-            output_format=miniaudio.SampleFormat.SIGNED16,
-            nchannels=channels,
-            sample_rate=sample_rate,
-            buffersize_msec=self._buffersize_msec,
-        )
-        generator = generator_factory()
-        next(generator)  # протокол: генератор запущен до device.start()
+        # Устройство переиспользуется между пауза/продолжить (без щелчка):
+        # пересоздаём только при смене частоты/каналов у нового трека.
+        device = self._device
+        if device is None or device.sample_rate != sample_rate \
+                or device.nchannels != channels:
+            if device is not None:
+                device.close()
+            device = miniaudio.PlaybackDevice(
+                output_format=miniaudio.SampleFormat.SIGNED16,
+                nchannels=channels,
+                sample_rate=sample_rate,
+                buffersize_msec=self._buffersize_msec,
+            )
+            self._device = device
+        else:
+            device.stop()
+        try:
+            generator = generator_factory()
+            next(generator)  # протокол: генератор запущен до device.start()
+        except StopIteration:
+            return  # пустой трек / вырожденное окно: нечего запускать
         device.start(generator)
-        self._device = device
 
     def stop(self) -> None:
         if self._device is not None:
@@ -172,8 +187,13 @@ class FakeSink(AudioSink):
         self.sample_rate = sample_rate
         self.channels = channels
         self._generator = generator_factory()
-        self._pending_chunk = next(self._generator)  # priming, как в miniaudio
-        self.finished = False
+        try:
+            # priming, как в miniaudio
+            self._pending_chunk = next(self._generator)
+        except StopIteration:
+            self._generator = None
+            self._pending_chunk = None
+            self.finished = True
 
     def stop(self) -> None:
         self._generator = None
@@ -272,9 +292,11 @@ class _TrackState:
         self.ola_primed = False
         self.ola_tail = np.zeros(_OLA_HOP * channels, dtype=np.float32)
         self.pending = np.zeros(0, dtype=np.float32)
-        # бюджет выхода для OLA: длительность окна / темп
-        self.output_target = (self.trim_end - self.trim_start) \
-            / self.rate_factor
+        # бюджет выхода для OLA: длительность окна / темп.
+        # Целое число фреймов (ceil), иначе дробный хвост бюджета не даёт
+        # сработать условию финиша -> вечный спин с зажатой блокировкой.
+        self.output_target = max(0, int(math.ceil(
+            (self.trim_end - self.trim_start) / self.rate_factor)))
 
     def position_seconds(self) -> float:
         """Позиция в исходном времени трека (по отданным фреймам), сек."""
@@ -291,22 +313,28 @@ class PlaybackEngine:
         self._sink_factory = sink_factory or MiniaudioSink
         self._sink: AudioSink | None = None
         self._state: _TrackState | None = None
+        self._paused = False
         self._lock = threading.Lock()
 
     # --- публичное API (поток GUI) ---
 
     def play(self, track: PlaybackTrack) -> None:
-        """Загружает трек и начинает воспроизведение с начала."""
+        """Загружает трек и начинает воспроизведение с начала.
+
+        Бросает AudioEngineError, если файл не найден/битый.
+        """
         self.stop()
         state = self._load_track(track)
         with self._lock:
             self._state = state
+            self._paused = False
         sink = self._sink_factory()
         sink.start(lambda: self._generator(state), state.rate, state.channels)
         self._sink = sink
 
     def pause(self) -> None:
         """Пауза: устройство остановлено, позиция и аккумулятор заморожены."""
+        self._paused = True
         if self._sink is not None:
             self._sink.stop()
 
@@ -315,13 +343,16 @@ class PlaybackEngine:
         with self._lock:
             state = self._state
             finished = state is None or state.finished
-        if self._sink is None or finished or state is None:
+        if self._sink is None or finished or state is None \
+                or not self._paused:
             return
+        self._paused = False
         self._sink.start(lambda: self._generator(state), state.rate,
                          state.channels)
 
     def stop(self) -> None:
         """Полная остановка и сброс состояния (аккумулятор обнуляется)."""
+        self._paused = False
         if self._sink is not None:
             self._sink.stop()
             self._sink = None
@@ -358,6 +389,21 @@ class PlaybackEngine:
             if end_reached:
                 state.finished = True
                 self.event_queue.put(TrackFinished(path=state.track.path))
+        # Перезапускаем sink, чтобы не доигрывались ~200 мс старого буфера
+        # устройства. На паузе не перезапускаем: resume() и так поднимет
+        # свежий генератор уже с новой позиции.
+        self._restart_sink()
+
+    def _restart_sink(self) -> None:
+        """Останавливает и заново запускает sink (для seek)."""
+        with self._lock:
+            state = self._state
+            paused = self._paused
+        if state is None or state.finished or paused or self._sink is None:
+            return
+        self._sink.stop()
+        self._sink.start(lambda: self._generator(state), state.rate,
+                         state.channels)
 
     def set_volume(self, volume: float) -> None:
         """Громкость 0..1; NaN/некорректные значения игнорируются."""
@@ -379,27 +425,44 @@ class PlaybackEngine:
     def is_playing(self) -> bool:
         with self._lock:
             return self._state is not None and not self._state.finished \
-                and self._sink is not None
+                and self._sink is not None and not self._paused
 
     # --- внутреннее (поток устройства / генератор) ---
 
     def _load_track(self, track: PlaybackTrack) -> _TrackState:
-        """Декодирует файл в PCM (s16, родные частота/каналы)."""
+        """Декодирует файл в PCM (s16, родные частота/каналы).
+
+        Ошибки miniaudio (нет файла, битый/непонятный формат) переводятся
+        в AudioEngineError — единый контракт для контроллера.
+        """
         path_str = str(track.path)
-        info = miniaudio.get_file_info(path_str)
-        decoded = miniaudio.decode_file(
-            path_str,
-            output_format=miniaudio.SampleFormat.SIGNED16,
-            nchannels=info.nchannels,
-            sample_rate=info.sample_rate,
-        )
-        frames = np.asarray(decoded.samples, dtype=np.int16).astype(np.float32)
+        try:
+            info = miniaudio.get_file_info(path_str)
+            decoded = miniaudio.decode_file(
+                path_str,
+                output_format=miniaudio.SampleFormat.SIGNED16,
+                nchannels=info.nchannels,
+                sample_rate=info.sample_rate,
+            )
+        except (OSError, miniaudio.MiniaudioError, StopIteration,
+                ValueError) as exc:
+            raise AudioEngineError(
+                f'Не удалось загрузить {track.path}: {exc}') from exc
+        # int16-мастер: float32 конвертируются только трогаемые срезы
+        # (зерно OLA <= 4096 фреймов, ресемплинг — по 2 сэмпла на фрейм),
+        # чтобы не держать в RAM расширенную копию всего файла.
+        frames = np.asarray(decoded.samples, dtype=np.int16)
         return _TrackState(track, frames, decoded.sample_rate,
                            decoded.nchannels)
 
     def _generator(self, state: _TrackState) -> Iterator[bytes]:
         """Генератор PCM для sink-потока: send(n_frames) -> s16-байты."""
         chunk = self._produce(state, _PRIME_FRAMES)
+        if not chunk:
+            # пустой файл / вырожденное окно: первый (пустой) чанк обязателен,
+            # иначе priming в sink упрётся в StopIteration
+            yield chunk
+            return
         while chunk:
             frames_needed = yield chunk
             if not isinstance(frames_needed, int) or frames_needed <= 0:
@@ -453,8 +516,8 @@ class PlaybackEngine:
             i1c = np.clip(i1 * channels, 0, len(src) - channels)
             segment = np.empty(len(idx) * channels, dtype=np.float32)
             for channel in range(channels):
-                lo = src[i0c + channel]
-                hi = src[i1c + channel]
+                lo = src[i0c + channel].astype(np.float32)
+                hi = src[i1c + channel].astype(np.float32)
                 segment[channel::channels] = lo + (hi - lo) * frac
             state.src_pos = float(idx[-1]) + step
             state.pending = np.concatenate((state.pending, segment))
@@ -494,7 +557,12 @@ class PlaybackEngine:
         state.ola_apos += _OLA_HOP * state.rate_factor
         # не выходим за бюджет выхода (финиш может отрезать часть зерна)
         allowed_frames = min(_OLA_HOP,
-                             int(state.output_target) - state.output_generated)
+                             state.output_target - state.output_generated)
+        if allowed_frames <= 0:
+            # страховка от дробного бюджета: без этого — вечный спин
+            state.finished = True
+            self.event_queue.put(TrackFinished(path=state.track.path))
+            return
         state.pending = np.concatenate(
             (state.pending, out[:allowed_frames * channels]))
         state.output_generated += allowed_frames
@@ -512,8 +580,9 @@ class PlaybackEngine:
         src_end = (i0 + _OLA_GRAIN) * channels
         take = max(0, min(len(state.frames), src_end) - src_start)
         if take > 0:
+            # int16 -> float32 только для срезов зерна (см. _load_track)
             grain[dst_start:dst_start + take] = \
-                state.frames[src_start:src_start + take]
+                state.frames[src_start:src_start + take].astype(np.float32)
         return grain * _OLA_WINDOW.repeat(channels)
 
 
