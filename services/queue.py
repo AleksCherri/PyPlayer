@@ -211,6 +211,47 @@ class PlaybackQueue:
         self._current_id = self._seq[self._pos]
         return self._current_id
 
+    def peek_next(self) -> int | None:
+        """Следующий трек для UI (не меняет состояние очереди).
+
+        В random_repeat следующий трек заранее неизвестен — None.
+        """
+        if not self._seq or self._mode == ORDER_RANDOM_REPEAT:
+            return None
+        next_pos = self._pos + 1
+        if next_pos >= len(self._seq):
+            if self._mode not in _LOOP_MODES:
+                return None
+            next_pos = 0
+        return self._seq[next_pos]
+
+    def peek_prev(self) -> int | None:
+        """Предыдущий трек для UI (не меняет состояние очереди)."""
+        if not self._seq:
+            return None
+        if self._mode == ORDER_RANDOM_REPEAT:
+            return self._history[-2] if len(self._history) >= 2 else None
+        if self._pos <= 0:
+            return self._seq[-1] if self._mode in _LOOP_MODES else None
+        return self._seq[self._pos - 1]
+
+    def set_order_mode(self, mode: str) -> None:
+        """Сменить режим на лету (кнопки shuffle/repeat в UI).
+
+        По возможности сохраняется текущий трек, чтобы смена режима не
+        выбивала слушателя в начало очереди.
+        """
+        if mode not in ORDER_MODES:
+            raise ValueError(f'Неизвестный режим порядка: {mode!r}')
+        current = self._current_id
+        self._mode = mode
+        self._prepare()
+        if current is not None and current in self._seq:
+            self._pos = self._seq.index(current)
+            self._current_id = current
+            if mode == ORDER_RANDOM_REPEAT:
+                self._history.append(current)
+
     def reset(self) -> None:
         """С начала (случайные режимы получают новую перестановку)."""
         self._prepare()

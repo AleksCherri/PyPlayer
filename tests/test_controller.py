@@ -395,3 +395,45 @@ def test_finish_then_manual_next_no_double_flush(
     row = _stats(db, t1)
     assert row['play_count'] == 1
     assert row['total_listened_sec'] == pytest.approx(0.5, abs=0.05)
+
+
+def test_seek_passthrough(qapp, db: Database, make_controller) -> None:
+    controller, engine, _ = make_controller()
+    calls: list[float] = []
+    engine.seek = calls.append  # type: ignore[method-assign]
+    controller.seek(12.5)
+    assert calls == [12.5]
+
+
+def test_set_order_mode_persists_and_updates_queue(
+        qapp, db: Database, make_controller, make_wav) -> None:
+    track_id = _add_track(db, make_wav(Path('mode.wav')), 'Mode')
+    playlist_id = _add_playlist(db, 'ModeList', ORDER_SEQUENTIAL,
+                                [('track', track_id)])
+    controller, _, _ = make_controller()
+    controller.play_playlist(playlist_id)
+
+    controller.set_order_mode(ORDER_SEQUENTIAL_LOOP)
+
+    assert controller.order_mode() == ORDER_SEQUENTIAL_LOOP
+    row = db.get_connection().execute(
+        'SELECT order_mode FROM playlists WHERE id = ?',
+        (playlist_id,)).fetchone()
+    assert row['order_mode'] == ORDER_SEQUENTIAL_LOOP
+
+
+def test_prev_next_labels_for_column_three(
+        qapp, db: Database, make_controller, make_wav) -> None:
+    t1 = _add_track(db, make_wav(Path('lab1.wav')), 'Label1')
+    t2 = _add_track(db, make_wav(Path('lab2.wav')), 'Label2')
+    playlist_id = _add_playlist(db, 'Labels', ORDER_SEQUENTIAL,
+                                [('track', t1), ('track', t2)])
+    controller, _, _ = make_controller()
+
+    controller.play_playlist(playlist_id)
+    assert controller.prev_track_label() == '—'
+    assert 'Label2' in controller.next_track_label()
+    assert 'Labels' in controller.next_track_label()
+
+    controller.next_track()
+    assert 'Label1' in controller.prev_track_label()

@@ -56,6 +56,11 @@ def _validate_key(key: str, value: Any) -> Any:
     return value  # неизвестные ключи сохраняются без изменений
 
 
+def save_config(path: Path, config: dict[str, Any]) -> bool:
+    """Сохраняет конфиг в ``path``; False при ошибке записи."""
+    return _write(path, config)
+
+
 def load_config(path: Path) -> dict[str, Any]:
     """Загружает конфиг из ``path``; при необходимости создаёт его.
 

@@ -246,3 +246,32 @@ def test_single_track_prev_all_modes() -> None:
             assert queue.prev() == 10, mode  # заворот на себя
         else:
             assert queue.prev() is None, mode
+
+
+def test_peek_does_not_mutate_queue() -> None:
+    queue = _make_queue([10, 20, 30], ORDER_SEQUENTIAL, seed=1)
+    assert queue.peek_next() == 10
+    assert queue.peek_prev() is None
+
+    assert queue.next() == 10
+    assert queue.peek_next() == 20
+    assert queue.peek_prev() is None  # нецикличная очередь: начала нет
+    assert queue.current() == 10      # peek ничего не сдвинул
+
+    looped = _make_queue([10, 20, 30], ORDER_SEQUENTIAL_LOOP, seed=1)
+    looped.next()
+    assert looped.peek_prev() == 30   # заворот в конец
+
+
+def test_set_order_mode_preserves_current() -> None:
+    queue = _make_queue([10, 20, 30], ORDER_SEQUENTIAL, seed=1)
+    queue.next()
+    queue.next()
+    assert queue.current() == 20
+
+    queue.set_order_mode(ORDER_RANDOM_NO_REPEAT)
+    assert queue.order_mode == ORDER_RANDOM_NO_REPEAT
+    assert queue.current() == 20  # режим сменился без прыжка в начало
+
+    with pytest.raises(ValueError):
+        queue.set_order_mode('chaos')

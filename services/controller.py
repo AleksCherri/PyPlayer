@@ -30,7 +30,7 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from services.audio.engine import (
     AudioEngineError,
@@ -170,6 +170,74 @@ class PlaybackController(QObject):
         """Громкость 0..1 (passthrough в движок; NaN игнорируется им)."""
         self._engine.set_volume(volume)
 
+    @Slot(float)
+    def seek(self, seconds: float) -> None:
+        """Перемотка шкалой воспроизведения (passthrough в движок)."""
+        self._engine.seek(seconds)
+
+    @Slot(result=bool)
+    def is_playing(self) -> bool:
+        return self._engine.is_playing()
+
+    @Slot()
+    def toggle_play(self) -> None:
+        """Кнопка play/pause в QML (только через контроллер)."""
+        if self._engine.is_playing():
+            self._engine.pause()
+        elif self._engine.position_seconds() is not None:
+            self._engine.resume()
+
+    @Slot(result=str)
+    def order_mode(self) -> str:
+        """Текущий режим порядка (для кнопок shuffle/repeat)."""
+        if self._queue is not None:
+            return self._queue.order_mode
+        if self._playlist_id is not None:
+            row = self._db.get_connection().execute(
+                'SELECT order_mode FROM playlists WHERE id = ?',
+                (self._playlist_id,)).fetchone()
+            if row is not None:
+                return str(row['order_mode'])
+        return ORDER_SEQUENTIAL
+
+    @Slot(str)
+    def set_order_mode(self, mode: str) -> None:
+        """Shuffle/repeat-кнопки: сменить режим текущего плейлиста."""
+        if mode not in ORDER_MODES:
+            return
+        playlist_id = self._playlist_id
+        if playlist_id is not None:
+            with self._db.transaction() as tx:
+                tx.execute('UPDATE playlists SET order_mode = ? WHERE id = ?',
+                           (mode, playlist_id))
+        if self._queue is not None:
+            self._queue.set_order_mode(mode)
+
+    @Slot(result=str)
+    def prev_track_label(self) -> str:
+        """Подпись предыдущего трека для колонки 3."""
+        return self._label_for(self._queue.peek_prev()) \
+            if self._queue is not None else ''
+
+    @Slot(result=str)
+    def next_track_label(self) -> str:
+        """Подпись следующего трека для колонки 3."""
+        return self._label_for(self._queue.peek_next()) \
+            if self._queue is not None else ''
+
+    def _label_for(self, track_id: int | None) -> str:
+        if track_id is None:
+            return '—'
+        row = self._fetch_track_row(track_id)
+        if row is None:
+            return '—'
+        label = row['title'] or row['path']
+        if row['artist']:
+            label = f'{label} — {row["artist"]}'
+        if self._playlist_name:
+            label = f'{label} ({self._playlist_name})'
+        return label
+
     def shutdown(self) -> None:
         """Сброс статистики при выходе из приложения."""
         self._flush_current()
@@ -289,7 +357,8 @@ class PlaybackController(QObject):
         played = self._engine.played_seconds()
         if played <= 0.0:
             return
-        self._stats_flushed = True  # идемпотентно: prev() в начале трека и т.п.
+        # идемпотентно: prev() в начале трека и т.п.
+        self._stats_flushed = True
         with self._db.transaction() as tx:
             tx.execute(
                 """
