@@ -26,7 +26,7 @@ A->B->D, A->C->D разрешён). Глубина ограничена max_dept
 from __future__ import annotations
 
 import random
-from collections.abc import Container, Mapping, Sequence
+from collections.abc import Callable, Container, Mapping, Sequence
 from dataclasses import dataclass
 
 ORDER_SEQUENTIAL = 'sequential'
@@ -122,22 +122,35 @@ class PlaybackQueue:
 
     def __init__(self, track_ids: Sequence[int],
                  order_mode: str = ORDER_SEQUENTIAL,
-                 rng: random.Random | None = None) -> None:
+                 rng: random.Random | None = None,
+                 order_factory: Callable[[Sequence[int]],
+                                         list[int]] | None = None) -> None:
+        """``order_factory`` — опциональный взвешенный порядок для
+        случайных режимов (умная рандомизация). OFF/SEQ — как раньше.
+        """
         if order_mode not in ORDER_MODES:
             raise ValueError(
                 f'Неизвестный режим порядка: {order_mode!r}')
         self._mode = order_mode
         self._rng = rng if rng is not None else random.Random()
+        self._order_factory = order_factory
         self._tracks = list(track_ids)
         self._pos = -1
         self._history: list[int] = []  # для random_repeat (prev)
         self._current_id: int | None = None  # для current() во всех режимах
         self._prepare()
 
+    def _shuffled(self, ids: Sequence[int]) -> list[int]:
+        """Новая перестановка: взвешенная (если задана) или равномерная."""
+        result = list(ids)
+        if self._order_factory is not None:
+            return self._order_factory(result)
+        self._rng.shuffle(result)
+        return result
+
     def _prepare(self) -> None:
         if self._mode in _SHUFFLE_MODES:
-            self._seq = list(self._tracks)
-            self._rng.shuffle(self._seq)
+            self._seq = self._shuffled(self._tracks)
         else:
             self._seq = list(self._tracks)
         self._pos = -1
@@ -166,7 +179,10 @@ class PlaybackQueue:
         if n == 0:
             return None
         if self._mode == ORDER_RANDOM_REPEAT:
-            track_id = self._tracks[self._rng.randrange(n)]
+            if self._order_factory is not None:
+                track_id = self._order_factory(list(self._tracks))[0]
+            else:
+                track_id = self._tracks[self._rng.randrange(n)]
             self._history.append(track_id)
             self._current_id = track_id
             return track_id
@@ -179,7 +195,7 @@ class PlaybackQueue:
             # перестановки. sequential_loop заворачивается на исходный
             # порядок — перемешивать его нельзя.
             if self._mode == ORDER_RANDOM_LOOP_NO_REPEAT:
-                self._rng.shuffle(self._seq)
+                self._seq = self._shuffled(self._tracks)
             self._pos = 0
         self._current_id = self._seq[self._pos]
         return self._current_id

@@ -56,3 +56,7 @@ class SettingsModel(QObject):
     @Slot(result=int)
     def maxPlaylistDepth(self) -> int:
         return int(self._config.get('max_playlist_depth', 5))
+
+    @Slot(result=int)
+    def recencyWindowDays(self) -> int:
+        return int(self._config.get('recency_window_days', 30))

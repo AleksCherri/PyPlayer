@@ -31,6 +31,25 @@ def test_loads_existing_config_and_rewrites_file(tmp_path: Path) -> None:
     assert on_disk["smart_shuffle_default"] == DEFAULT_CONFIG["smart_shuffle_default"]
 
 
+def test_recency_window_backfill_and_validation(tmp_path: Path) -> None:
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps({
+        'recency_window_days': '30',  # строка вместо int
+        'smart_shuffle_default': 'direct',
+    }), encoding='utf-8')
+
+    config = load_config(path)
+
+    assert config['recency_window_days'] == 30
+    assert config['smart_shuffle_default'] == 'direct'
+    assert json.loads(path.read_text(
+        encoding='utf-8'))['recency_window_days'] == 30
+
+    path.write_text(json.dumps({'recency_window_days': 90}),
+                    encoding='utf-8')
+    assert load_config(path)['recency_window_days'] == 90
+
+
 def test_corrupted_file_is_recreated(tmp_path: Path) -> None:
     path = tmp_path / 'config.json'
     path.write_text('{broken json', encoding='utf-8')

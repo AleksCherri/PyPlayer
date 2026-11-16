@@ -11,11 +11,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# recency_window_days — окно затухания свежести прослушивания (дней) для
+# умной рандомизации; отсутствующий ключ дозаполняется при загрузке (backfill).
 DEFAULT_CONFIG: dict[str, Any] = {
     "music_dir": "music",
     "max_playlist_depth": 5,
     "smart_shuffle_default": "off",
     "shuffle_temperature": 0.5,
+    "recency_window_days": 30,
 }
 
 _SHUFFLE_MODES = frozenset({"off", "direct", "inverse"})
@@ -53,6 +56,11 @@ def _validate_key(key: str, value: Any) -> Any:
         # json.load принимает литералы Infinity/-Infinity/NaN — отвергаем их
         return float(value) if isinstance(value, (int, float)) \
             and math.isfinite(value) and value > 0 else default
+    if key == 'recency_window_days':
+        if isinstance(value, bool):
+            return default
+        return value if isinstance(value, int) and 1 <= value <= 3650 \
+            else default
     return value  # неизвестные ключи сохраняются без изменений
 
 

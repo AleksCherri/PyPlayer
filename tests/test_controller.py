@@ -1,5 +1,6 @@
 """Тесты PlaybackController: статистика, очередь, signals, навигация."""
 import random
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from services.queue import (
     ORDER_SEQUENTIAL,
     ORDER_SEQUENTIAL_LOOP,
 )
+from services.shuffle import SMART_DIRECT, SMART_INVERSE
 
 
 @pytest.fixture(scope='module')
@@ -458,6 +460,36 @@ def test_set_order_mode_only_targets_selected_playlist(
     assert modes[selected_list] == ORDER_SEQUENTIAL_LOOP
     assert modes[playing_list] == ORDER_SEQUENTIAL
     assert controller.order_mode() == ORDER_SEQUENTIAL  # активная очередь
+
+
+def test_smart_shuffle_drives_queue_order(
+        qapp, db: Database, make_controller, make_wav) -> None:
+    heavy = _add_track(db, make_wav(Path('heavy.wav')), 'Heavy')
+    light = _add_track(db, make_wav(Path('light.wav')), 'Light')
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=1000)
+    with db.transaction() as tx:
+        for track_id in (heavy, light):
+            tx.execute('INSERT INTO play_stats (track_id) VALUES (?)',
+                       (track_id,))
+        tx.execute('UPDATE play_stats SET play_count = 1000, '
+                   'last_played_at = ? WHERE track_id = ?',
+                   (now.isoformat().replace('+00:00', 'Z'), heavy))
+        tx.execute('UPDATE play_stats SET play_count = 0, '
+                   'last_played_at = ? WHERE track_id = ?',
+                   (old.isoformat().replace('+00:00', 'Z'), light))
+    playlist_id = _add_playlist(db, 'Smart', ORDER_RANDOM_NO_REPEAT,
+                                [('track', heavy), ('track', light)])
+
+    direct, _, _ = make_controller(seed=7)
+    direct.configure_smart_shuffle(SMART_DIRECT, 0.5, 30)
+    direct.play_playlist(playlist_id)
+    assert direct.current_track['id'] == heavy  # часто и свежо -> первый
+
+    inverse, _, _ = make_controller(seed=7)
+    inverse.configure_smart_shuffle(SMART_INVERSE, 0.5, 30)
+    inverse.play_playlist(playlist_id)
+    assert inverse.current_track['id'] == light  # редко и старо -> первый
 
 
 def test_current_track_details(qapp, db: Database, make_controller,

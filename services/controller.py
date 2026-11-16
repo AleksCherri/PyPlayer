@@ -27,6 +27,7 @@
 """
 from __future__ import annotations
 
+import math
 import random
 from pathlib import Path
 
@@ -42,12 +43,26 @@ from services.audio.engine import (
 from services.db import Database
 from services.queue import (
     ORDER_MODES,
+    ORDER_RANDOM_LOOP_NO_REPEAT,
+    ORDER_RANDOM_NO_REPEAT,
+    ORDER_RANDOM_REPEAT,
     PlaylistCycleError,
     PlaylistDepthError,
     PlaybackQueue,
     PlaylistInfo,
     flatten_playlist,
 )
+from services.shuffle import (
+    DEFAULT_RECENCY_WINDOW_DAYS,
+    DEFAULT_TEMPERATURE,
+    SMART_MODES,
+    SMART_OFF,
+    TrackScore,
+    smart_order_factory,
+)
+
+_RANDOM_MODES = frozenset({ORDER_RANDOM_NO_REPEAT, ORDER_RANDOM_REPEAT,
+                           ORDER_RANDOM_LOOP_NO_REPEAT})
 
 
 class PlaybackController(QObject):
@@ -66,6 +81,9 @@ class PlaybackController(QObject):
         #Phase 4: передавать int(load_config(...)['max_playlist_depth'])
         self._max_depth = max_depth
         self._rng = random.Random(seed)
+        self._smart_mode = SMART_OFF
+        self._smart_temperature = DEFAULT_TEMPERATURE
+        self._recency_window_days = DEFAULT_RECENCY_WINDOW_DAYS
         self._queue: PlaybackQueue | None = None
         self._current_track: dict | None = None   # строка tracks как dict
         self._stats_flushed = False     # один сброс на один текущий трек
@@ -123,7 +141,7 @@ class PlaybackController(QObject):
         if info is None or info.order_mode not in ORDER_MODES:
             self._stop_playback()
             return
-        self._queue = PlaybackQueue(track_ids, info.order_mode, self._rng)
+        self._queue = self._make_queue(track_ids, info.order_mode)
         self._playlist_id = playlist_id
         self._playlist_name = info.name
         self.playlistChanged.emit(playlist_id, info.name)
@@ -169,6 +187,49 @@ class PlaybackController(QObject):
     def set_volume(self, volume: float) -> None:
         """Громкость 0..1 (passthrough в движок; NaN игнорируется им)."""
         self._engine.set_volume(volume)
+
+    @Slot(str, float, int)
+    def configure_smart_shuffle(self, mode: str, temperature: float,
+                                recency_window_days: int) -> None:
+        """Параметры умной рандомизации из конфига/настроек.
+
+        Применяются к следующему построению очереди и к каждому новому
+        проходу зацикленных случайных режимов (показы в UI не требуют
+        перезапуска текущего трека). OFF сохраняет старое поведение.
+        """
+        self._smart_mode = mode if mode in SMART_MODES else SMART_OFF
+        temp = float(temperature)
+        self._smart_temperature = temp if temp > 0 and math.isfinite(temp) \
+            else DEFAULT_TEMPERATURE
+        window = int(recency_window_days)
+        self._recency_window_days = window if window > 0 \
+            else DEFAULT_RECENCY_WINDOW_DAYS
+
+    def _fetch_scores(self, track_ids: list[int]) -> dict[int, TrackScore]:
+        """История прослушиваний для треков очереди (по умолчанию — пустая)."""
+        rows = self._db.get_connection().execute(
+            'SELECT track_id, play_count, last_played_at FROM play_stats'
+        ).fetchall()
+        history = {
+            row['track_id']: TrackScore(
+                row['track_id'],
+                max(0, int(row['play_count'] or 0)),
+                row['last_played_at'],
+            ) for row in rows
+        }
+        return {track_id: history.get(track_id, TrackScore(track_id))
+                for track_id in track_ids}
+
+    def _make_queue(self, track_ids: list[int],
+                    order_mode: str) -> PlaybackQueue:
+        """Очередь с умным порядком для случайных режимов (если включён)."""
+        if self._smart_mode == SMART_OFF or order_mode not in _RANDOM_MODES \
+                or len(track_ids) <= 1:
+            return PlaybackQueue(track_ids, order_mode, self._rng)
+        factory = smart_order_factory(
+            self._fetch_scores(track_ids), self._smart_mode,
+            self._smart_temperature, self._recency_window_days, self._rng)
+        return PlaybackQueue(track_ids, order_mode, self._rng, factory)
 
     @Slot(float)
     def seek(self, seconds: float) -> None:

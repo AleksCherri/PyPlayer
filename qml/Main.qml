@@ -45,10 +45,12 @@ ApplicationWindow {
     // он обновляет активную очередь и сохраняет режим в БД целевого
     // плейлиста. Модель плейлистов здесь только перечитывается из БД.
     function applyMode(mode) {
-        root.currentMode = mode
         player.set_order_mode(mode,
                               root.selectedPlaylist > 0
                               ? root.selectedPlaylist : -1)
+        // Контроллер — единственный источник правды: он может не применить
+        // режим к неиграющему плейлисту — отражаем его фактическое состояние.
+        root.currentMode = player.order_mode()
         playlistModel.reload()
         root.refreshTrackLabels()
     }

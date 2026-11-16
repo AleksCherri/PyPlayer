@@ -145,3 +145,17 @@ def test_playlist_stats_empty(db: Database) -> None:
     assert stats['trackCount'] == 0
     assert stats['avgDurationSec'] == 0.0
     assert stats['sharePercent'] == 0.0
+
+
+def test_playlist_stats_zero_total_listened(db: Database) -> None:
+    """Треки есть, прослушиваний нет: деление на ноль не происходит."""
+    playlist_id = create_playlist(db, 'Silent')
+    track_id = _add_track(db, 'silent', 12.0)
+    add_item(db, playlist_id, 'track', track_id)
+
+    stats = playlist_stats(db, playlist_id)
+
+    assert stats['trackCount'] == 1
+    assert stats['totalDurationSec'] == 12.0
+    assert stats['listenedSec'] == 0.0
+    assert stats['sharePercent'] == 0.0

@@ -1,4 +1,5 @@
 """Точка входа PyPlayer: QGuiApplication + модели + QML-интерфейс."""
+import signal
 import sys
 from pathlib import Path
 
@@ -20,6 +21,24 @@ from services.library import resolve_music_dir, scan_library
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / 'data'
 QML_DIR = BASE_DIR / 'qml'
+
+
+def sync_smart_shuffle(playback: PlaybackController,
+                       settings: SettingsModel) -> None:
+    """Передать текущие настройки умной рандомизации в контроллер."""
+    playback.configure_smart_shuffle(
+        settings.smartShuffle, settings.temperature,
+        settings.recencyWindowDays())
+
+
+def install_signal_handlers(app: QGuiApplication,
+                            playback: PlaybackController) -> None:
+    """SIGINT: сбросить статистику и корректно выйти из Qt-цикла."""
+    def handle_sigint(signum: int, frame: object) -> None:
+        playback.shutdown()
+        app.quit()
+
+    signal.signal(signal.SIGINT, handle_sigint)
 
 
 def main() -> None:
@@ -50,6 +69,11 @@ def main() -> None:
         db, PlaybackEngine(),
         max_depth=int(config['max_playlist_depth']))
     settings = SettingsModel(config_path, config)
+    sync_smart_shuffle(playback, settings)
+    settings.smartShuffleChanged.connect(
+        lambda: sync_smart_shuffle(playback, settings))
+    settings.temperatureChanged.connect(
+        lambda: sync_smart_shuffle(playback, settings))
 
     context = engine.rootContext()
     context.setContextProperty('trackModel', track_model)
@@ -61,6 +85,7 @@ def main() -> None:
     context.setContextProperty('musicDir', str(music_dir or ''))
 
     app.aboutToQuit.connect(playback.shutdown)
+    install_signal_handlers(app, playback)
 
     engine.load(QUrl.fromLocalFile(str(QML_DIR / 'Main.qml')))
     if not engine.rootObjects():

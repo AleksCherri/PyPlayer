@@ -263,6 +263,23 @@ def test_peek_does_not_mutate_queue() -> None:
     assert looped.peek_prev() == 30   # заворот в конец
 
 
+def test_order_factory_used_for_random_modes() -> None:
+    """Взвешенная фабрика ORDER задаёт порядок только в random-режимах."""
+    factory = lambda ids: list(reversed(ids))
+
+    random_queue = PlaybackQueue([10, 20, 30], ORDER_RANDOM_NO_REPEAT,
+                                 random.Random(1), factory)
+    assert [random_queue.next() for _ in range(3)] == [30, 20, 10]
+
+    repeated = PlaybackQueue([10, 20, 30], ORDER_RANDOM_REPEAT,
+                             random.Random(1), factory)
+    assert repeated.next() == 30
+
+    sequential = PlaybackQueue([10, 20, 30], ORDER_SEQUENTIAL,
+                               random.Random(1), factory)
+    assert [sequential.next() for _ in range(3)] == [10, 20, 30]
+
+
 def test_set_order_mode_preserves_current() -> None:
     queue = _make_queue([10, 20, 30], ORDER_SEQUENTIAL, seed=1)
     queue.next()
