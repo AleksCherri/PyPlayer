@@ -437,3 +437,40 @@ def test_prev_next_labels_for_column_three(
 
     controller.next_track()
     assert 'Label1' in controller.prev_track_label()
+
+
+def test_set_order_mode_only_targets_selected_playlist(
+        qapp, db: Database, make_controller, make_wav) -> None:
+    playing = _add_track(db, make_wav(Path('play.wav')), 'Playing')
+    other = _add_track(db, make_wav(Path('other.wav')), 'Other')
+    playing_list = _add_playlist(db, 'PlayingList', ORDER_SEQUENTIAL,
+                                 [('track', playing)])
+    selected_list = _add_playlist(db, 'SelectedList', ORDER_SEQUENTIAL,
+                                  [('track', other)])
+    controller, _, _ = make_controller()
+    controller.play_playlist(playing_list)
+
+    controller.set_order_mode(ORDER_SEQUENTIAL_LOOP, selected_list)
+
+    modes = {row['id']: row['order_mode'] for row in
+             db.get_connection().execute(
+                 'SELECT id, order_mode FROM playlists').fetchall()}
+    assert modes[selected_list] == ORDER_SEQUENTIAL_LOOP
+    assert modes[playing_list] == ORDER_SEQUENTIAL
+    assert controller.order_mode() == ORDER_SEQUENTIAL  # активная очередь
+
+
+def test_current_track_details(qapp, db: Database, make_controller,
+                               make_wav) -> None:
+    track_id = _add_track(db, make_wav(Path('details.wav')), 'Details')
+    with db.transaction() as tx:
+        tx.execute('UPDATE tracks SET artist = ?, format = ?, sample_rate = ? '
+                   'WHERE id = ?', ('Artist', 'WAV', 8000, track_id))
+    controller, _, _ = make_controller()
+    assert controller.current_track_details() == ''
+
+    controller.play(track_id)
+    details = controller.current_track_details()
+    assert 'Artist' in details
+    assert 'WAV' in details
+    assert '8000' in details

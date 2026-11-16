@@ -1,6 +1,7 @@
 """Настройки плеера, доступные QML (переключатель умной рандомизации)."""
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +43,8 @@ class SettingsModel(QObject):
 
     @Slot(float)
     def setTemperature(self, value: float) -> None:
-        if value <= 0 or value == self._temperature():
+        if not math.isfinite(value) or value <= 0 \
+                or value == self._temperature():
             return
         self._config['shuffle_temperature'] = value
         save_config(self._path, self._config)

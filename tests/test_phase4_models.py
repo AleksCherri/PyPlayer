@@ -128,3 +128,7 @@ def test_settings_model_persists(qapp, tmp_path: Path) -> None:
 
     settings.setSmartShuffle('invalid')  # игнорируется
     assert settings.smartShuffle == 'inverse'
+
+    settings.setTemperature(float('nan'))  # NaN не портит конфиг
+    assert settings.temperature == pytest.approx(1.25)
+    assert load_config(path)['shuffle_temperature'] == pytest.approx(1.25)

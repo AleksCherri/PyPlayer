@@ -200,17 +200,23 @@ class PlaybackController(QObject):
                 return str(row['order_mode'])
         return ORDER_SEQUENTIAL
 
-    @Slot(str)
-    def set_order_mode(self, mode: str) -> None:
-        """Shuffle/repeat-кнопки: сменить режим текущего плейлиста."""
+    @Slot(str, int)
+    def set_order_mode(self, mode: str, playlist_id: int = -1) -> None:
+        """Shuffle/repeat-кнопки: сменить режим плейлиста.
+
+        Единственный источник правды: контроллер. ``playlist_id`` — целевой
+        плейлист из UI (QML передаёт -1, если выбран не он). Режим пишется
+        в БД только для целевого плейлиста; активная очередь меняется,
+        только если это тот же плейлист, — так два плейлиста не расходятся.
+        """
         if mode not in ORDER_MODES:
             return
-        playlist_id = self._playlist_id
-        if playlist_id is not None:
+        target = playlist_id if playlist_id > 0 else self._playlist_id
+        if target is not None:
             with self._db.transaction() as tx:
                 tx.execute('UPDATE playlists SET order_mode = ? WHERE id = ?',
-                           (mode, playlist_id))
-        if self._queue is not None:
+                           (mode, target))
+        if self._queue is not None and target == self._playlist_id:
             self._queue.set_order_mode(mode)
 
     @Slot(result=str)
@@ -224,6 +230,17 @@ class PlaybackController(QObject):
         """Подпись следующего трека для колонки 3."""
         return self._label_for(self._queue.peek_next()) \
             if self._queue is not None else ''
+
+    @Slot(result=str)
+    def current_track_details(self) -> str:
+        """Исполнитель, расширение и частота текущего трека для колонки 3."""
+        if self._current_track is None:
+            return ''
+        row = self._current_track
+        parts = [row['artist'] or '—', str(row['format'] or '—').upper()]
+        if row['sample_rate']:
+            parts.append(f'{row["sample_rate"]} Гц')
+        return ' · '.join(parts)
 
     def _label_for(self, track_id: int | None) -> str:
         if track_id is None:

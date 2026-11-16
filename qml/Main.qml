@@ -41,16 +41,47 @@ ApplicationWindow {
                    stat.sharePercent.toFixed(1))
     }
 
+    // Единственный источник правды о режиме порядка — PlaybackController:
+    // он обновляет активную очередь и сохраняет режим в БД целевого
+    // плейлиста. Модель плейлистов здесь только перечитывается из БД.
     function applyMode(mode) {
         root.currentMode = mode
-        player.set_order_mode(mode)
-        if (root.selectedPlaylist > 0)
-            playlistModel.setOrderMode(root.selectedPlaylist, mode)
+        player.set_order_mode(mode,
+                              root.selectedPlaylist > 0
+                              ? root.selectedPlaylist : -1)
+        playlistModel.reload()
+        root.refreshTrackLabels()
     }
 
     function refreshTrackLabels() {
         prevLabel.text = player.prev_track_label()
         nextLabel.text = player.next_track_label()
+        currentDetails.text = player.current_track_details()
+    }
+
+    // Заглушка обложки: в БД пока нет изображения, Image оставлен как
+    // точка подключения обложки из карточки трека в будущем.
+    component TrackIcon: Item {
+        property string glyph: "♪"
+        width: 36
+        height: 36
+        Rectangle {
+            anchors.fill: parent
+            color: "#e6edf7"
+            radius: 4
+        }
+        Image {
+            anchors.fill: parent
+            fillMode: Image.PreserveAspectFit
+            source: ""
+            visible: false
+        }
+        Text {
+            anchors.centerIn: parent
+            text: parent.glyph
+            color: "#7a8ca8"
+            font.pixelSize: 18
+        }
     }
 
     header: ToolBar {
@@ -130,6 +161,8 @@ ApplicationWindow {
                 Layout.fillHeight: true
                 border.color: "#bbbbbb"
                 radius: 3
+                // DropArea — родитель списка: Qt доставляет drop по цепочке
+                // родителей, а не соседним элементам.
                 DropArea {
                     anchors.fill: parent
                     onDropped: {
@@ -140,75 +173,72 @@ ApplicationWindow {
                         else if (tid > 0)
                             root.statusText = qsTr("Сначала выберите плейлист")
                     }
-                }
-                ListView {
-                    id: playlistsView
-                    anchors.fill: parent
-                    anchors.margins: 1
-                    clip: true
-                    model: playlistModel
-                    delegate: Rectangle {
-                        width: playlistsView.width
-                        height: 64
-                        color: root.selectedPlaylist === model.playlistId
-                               ? "#d9e8ff" : (plistMouse.containsMouse
-                                              ? "#f2f2f2" : "white")
-                        border.color: "#dddddd"
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: 4
-                            spacing: 0
-                            Text {
-                                text: model.name
-                                font.bold: true
-                                elide: Text.ElideRight
-                                Layout.fillWidth: true
-                            }
-                            Text {
-                                text: qsTr("Треков: %1 · %2").arg(
-                                          model.trackCount).arg(model.createdAt)
-                                font.pixelSize: 11
-                                elide: Text.ElideRight
-                                Layout.fillWidth: true
-                            }
-                            Text {
-                                text: model.description
-                                font.pixelSize: 11
-                                color: "#666666"
-                                elide: Text.ElideRight
-                                Layout.fillWidth: true
-                            }
-                        }
-                        MouseArea {
-                            id: plistMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            onClicked: {
-                                if (mouse.button === Qt.RightButton) {
-                                    plistMenu.popup()
-                                    return
+                    ListView {
+                        id: playlistsView
+                        anchors.fill: parent
+                        anchors.margins: 1
+                        clip: true
+                        model: playlistModel
+                        delegate: Rectangle {
+                            width: playlistsView.width
+                            height: 64
+                            color: root.selectedPlaylist === model.playlistId
+                                   ? "#d9e8ff" : (plistMouse.containsMouse
+                                                  ? "#f2f2f2" : "white")
+                            border.color: "#dddddd"
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.margins: 4
+                                spacing: 0
+                                Text {
+                                    text: model.name
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
                                 }
-                                root.selectedPlaylist = model.playlistId
-                                root.selectedPlaylistName = model.name
-                                playlistItems.setPlaylist(model.playlistId)
-                                root.currentMode = model.orderMode
-                                statsText.text = root.formatStats(
-                                    playlistModel.stats(model.playlistId))
-                                root.refreshTrackLabels()
+                                Text {
+                                    text: qsTr("Треков: %1 · %2").arg(
+                                              model.trackCount).arg(
+                                              model.createdAt)
+                                    font.pixelSize: 11
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
+                                }
+                                Text {
+                                    text: model.description
+                                    font.pixelSize: 11
+                                    color: "#666666"
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
+                                }
                             }
-                            onDoubleClicked: player.play_playlist(model.playlistId)
-                        }
-                        Menu {
-                            id: plistMenu
-                            MenuItem {
-                                text: qsTr("Воспроизвести")
-                                onTriggered: player.play_playlist(model.playlistId)
+                            MouseArea {
+                                id: plistMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                onClicked: {
+                                    if (mouse.button === Qt.RightButton) {
+                                        plistMenu.popup()
+                                        return
+                                    }
+                                    root.selectedPlaylist = model.playlistId
+                                    root.selectedPlaylistName = model.name
+                                    playlistItems.setPlaylist(model.playlistId)
+                                    root.currentMode = model.orderMode
+                                    statsText.text = root.formatStats(
+                                        playlistModel.stats(model.playlistId))
+                                    root.refreshTrackLabels()
+                                }
+                                onDoubleClicked: player.play_playlist(
+                                                     model.playlistId)
                             }
-                            MenuItem {
-                                text: qsTr("Добавить в это же плейлист")
-                                onTriggered: {
-                                    if (model.refId !== undefined)
-                                        playlistItems.addPlaylist(model.playlistId)
+                            Menu {
+                                id: plistMenu
+                                MenuItem {
+                                    text: qsTr("Воспроизвести")
+                                    onTriggered: player.play_playlist(
+                                                     model.playlistId)
                                 }
                             }
                         }
@@ -231,11 +261,25 @@ ApplicationWindow {
                     anchors.margins: 1
                     clip: true
                     model: playlistItems
-                    delegate: Rectangle {
+                    // Сам delegate — DropArea: вложенные MouseArea/Image —
+                    // его дети, поэтому drop доставляется в этот элемент.
+                    delegate: DropArea {
                         width: itemsView.width
                         height: 30
-                        color: itemMouse.containsMouse ? "#eeeeee" : "white"
-                        border.color: "#eeeeee"
+                        onDropped: {
+                            var data = drop.getDataAsString(
+                                           "application/x-pyplayer-item")
+                            if (data !== "") {
+                                var from = Number(data)
+                                if (!isNaN(from))
+                                    playlistItems.moveItem(from, model.position)
+                            }
+                        }
+                        Rectangle {
+                            anchors.fill: parent
+                            color: itemMouse.containsMouse ? "#eeeeee" : "white"
+                            border.color: "#eeeeee"
+                        }
                         Drag.active: itemMouse.drag.active
                         Drag.hotSpot.x: width / 2
                         Drag.hotSpot.y: height / 2
@@ -258,20 +302,11 @@ ApplicationWindow {
                                 elide: Text.ElideRight
                             }
                         }
-                        DropArea {
-                            anchors.fill: parent
-                            onDropped: {
-                                var from = Number(drop.getDataAsString(
-                                                 "application/x-pyplayer-item"))
-                                if (!isNaN(from) && drop.getDataAsString(
-                                        "application/x-pyplayer-item") !== "")
-                                    playlistItems.moveItem(from, model.position)
-                            }
-                        }
                         MouseArea {
                             id: itemMouse
                             anchors.fill: parent
                             hoverEnabled: true
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
                             drag.target: parent
                             drag.axis: Drag.XAndYAxis
                             onClicked: {
@@ -328,7 +363,8 @@ ApplicationWindow {
                 onTextChanged: trackFilter.setFilterText(text)
             }
             Label {
-                text: qsTr("Найдено: %1").arg(trackFilter.count)
+                objectName: "foundLabel"
+                text: qsTr("Найдено: %1").arg(trackFilter.count())
                 font.pixelSize: 11
             }
             Rectangle {
@@ -378,6 +414,7 @@ ApplicationWindow {
                             id: trackMouse
                             anchors.fill: parent
                             hoverEnabled: true
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
                             drag.target: parent
                             drag.axis: Drag.XAndYAxis
                             onClicked: {
@@ -436,20 +473,25 @@ ApplicationWindow {
                 Layout.preferredHeight: 58
                 border.color: "#dddddd"
                 radius: 3
-                ColumnLayout {
+                RowLayout {
                     anchors.fill: parent
                     anchors.margins: 4
-                    spacing: 0
-                    Text {
-                        text: qsTr("Предыдущий трек")
-                        font.pixelSize: 10
-                        color: "#888888"
-                    }
-                    Text {
-                        id: prevLabel
-                        text: "—"
-                        elide: Text.ElideRight
+                    spacing: 6
+                    TrackIcon { glyph: "⏮" }
+                    ColumnLayout {
                         Layout.fillWidth: true
+                        spacing: 0
+                        Text {
+                            text: qsTr("Предыдущий трек")
+                            font.pixelSize: 10
+                            color: "#888888"
+                        }
+                        Text {
+                            id: prevLabel
+                            text: "—"
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
                     }
                 }
             }
@@ -464,21 +506,40 @@ ApplicationWindow {
                     anchors.margins: 10
                     spacing: 8
 
-                    Text {
-                        id: currentLabel
-                        text: root.currentTitle || qsTr("Трек не выбран")
-                        font.bold: true
-                        font.pixelSize: 16
-                        wrapMode: Text.Wrap
+                    RowLayout {
                         Layout.fillWidth: true
-                    }
-                    Text {
-                        text: root.currentPlaylistName
-                              ? qsTr("Плейлист: %1").arg(root.currentPlaylistName)
-                              : ""
-                        color: "#666666"
-                        elide: Text.ElideRight
-                        Layout.fillWidth: true
+                        spacing: 8
+                        TrackIcon { glyph: "♪" }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            Text {
+                                id: currentLabel
+                                text: root.currentTitle || qsTr("Трек не выбран")
+                                font.bold: true
+                                font.pixelSize: 15
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            Text {
+                                id: currentDetails
+                                text: ""
+                                font.pixelSize: 11
+                                color: "#666666"
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            Text {
+                                text: root.currentPlaylistName
+                                      ? qsTr("Плейлист: %1").arg(
+                                            root.currentPlaylistName)
+                                      : ""
+                                font.pixelSize: 11
+                                color: "#666666"
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                        }
                     }
 
                     RowLayout {
@@ -574,20 +635,25 @@ ApplicationWindow {
                 Layout.preferredHeight: 58
                 border.color: "#dddddd"
                 radius: 3
-                ColumnLayout {
+                RowLayout {
                     anchors.fill: parent
                     anchors.margins: 4
-                    spacing: 0
-                    Text {
-                        text: qsTr("Следующий трек")
-                        font.pixelSize: 10
-                        color: "#888888"
-                    }
-                    Text {
-                        id: nextLabel
-                        text: "—"
-                        elide: Text.ElideRight
+                    spacing: 6
+                    TrackIcon { glyph: "⏭" }
+                    ColumnLayout {
                         Layout.fillWidth: true
+                        spacing: 0
+                        Text {
+                            text: qsTr("Следующий трек")
+                            font.pixelSize: 10
+                            color: "#888888"
+                        }
+                        Text {
+                            id: nextLabel
+                            text: "—"
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
                     }
                 }
             }
@@ -599,8 +665,7 @@ ApplicationWindow {
         target: player
         function onCurrentTrackChanged(track) {
             root.currentTitle = track && track.title ? track.title : ""
-            prevLabel.text = player.prev_track_label()
-            nextLabel.text = player.next_track_label()
+            root.refreshTrackLabels()  // подписи + детали (исполнитель/формат)
             playButton.text = player.is_playing() ? "⏸" : "▶"
         }
         function onPlaylistChanged(playlistId, name) {
@@ -624,7 +689,13 @@ ApplicationWindow {
     Connections {
         target: playlistItems
         function onErrorOccurred(message) { root.statusText = message }
-        function onItemsChanged() { root.refreshTrackLabels() }
+        function onItemsChanged() {
+            root.refreshTrackLabels()
+            playlistModel.reload()  // счётчик треков в колонке 1
+            if (root.selectedPlaylist > 0)
+                statsText.text = root.formatStats(
+                    playlistModel.stats(root.selectedPlaylist))
+        }
     }
 
     // ---------- Диалоги ----------
