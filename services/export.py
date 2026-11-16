@@ -20,6 +20,10 @@ def export_to_json(db: Database, out_path: Path) -> Path:
     свою собственную версию данных).
     """
     with db.transaction() as conn:
+        # sqlite3 в legacy-режиме не открывает BEGIN перед SELECT — делаем
+        # это явно, иначе четыре SELECT идут в autocommit с разными
+        # WAL-снимками и "транзакция" была бы пустым звуком.
+        conn.execute('BEGIN')
         data = {
             'schema_version': SCHEMA_VERSION,
             **{name: [dict(row) for row in conn.execute(sql)]

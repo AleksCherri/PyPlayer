@@ -109,7 +109,8 @@ def test_updated_file_refreshes_fingerprint_same_path(
     assert after[0]['fingerprint'] != before['fingerprint']
 
 
-def test_retagged_file_updates_title_same_path(db: Database, tmp_path: Path) -> None:
+def test_retagged_file_updates_title_same_path(
+        db: Database, tmp_path: Path) -> None:
     """Ветка UPDATE по известному path: теги перечитываются, id не меняется."""
     music = tmp_path / 'music'
     music.mkdir(parents=True, exist_ok=True)

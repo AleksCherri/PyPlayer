@@ -1,6 +1,9 @@
 """Тесты JSON-экспорта (services/export.py)."""
 import json
+from contextlib import contextmanager
 from pathlib import Path
+
+import pytest
 
 from services.db import Database, SCHEMA_VERSION
 from services.export import export_to_json
@@ -63,3 +66,26 @@ def test_export_unicode_and_russian_content(db: Database, make_wav,
     assert 'песня' in raw                      # без \\u-эскейпов
     data = json.loads(raw)
     assert data['tracks'][0]['title'] == 'песня'
+
+
+def test_export_reads_inside_open_transaction(
+        db: Database, make_wav, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Чтение дампа идёт в открытой транзакции (один WAL-снимок)."""
+    make_wav(tmp_path / 'music' / 'song.wav')
+    scan_library(db, tmp_path / 'music')
+
+    captured: dict[str, bool] = {}
+    original_transaction = Database.transaction
+
+    @contextmanager
+    def spy_transaction(self: Database):
+        with original_transaction(self) as conn:
+            yield conn
+            # выполняется после тела export_to_json, но до commit
+            captured['in_transaction'] = conn.in_transaction
+
+    monkeypatch.setattr(Database, 'transaction', spy_transaction)
+    export_to_json(db, tmp_path / 'export.json')
+
+    assert captured['in_transaction'] is True
