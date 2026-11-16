@@ -3,7 +3,7 @@ import signal
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
@@ -33,10 +33,10 @@ def sync_smart_shuffle(playback: PlaybackController,
 
 def install_signal_handlers(app: QGuiApplication,
                             playback: PlaybackController) -> None:
-    """SIGINT: сбросить статистику и корректно выйти из Qt-цикла."""
+    """SIGINT: отложить сброс/выход в event loop (без ре-entrant Qt-вызовов)."""
     def handle_sigint(signum: int, frame: object) -> None:
-        playback.shutdown()
-        app.quit()
+        # Не называем Qt-объекты напрямую из обработчика сигнала Python.
+        QTimer.singleShot(0, lambda: (playback.shutdown(), app.quit()))
 
     signal.signal(signal.SIGINT, handle_sigint)
 

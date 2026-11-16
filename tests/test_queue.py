@@ -1,5 +1,6 @@
 """Тесты чистой логики очереди (services/queue.py) — без Qt."""
 import random
+from collections.abc import Sequence
 
 import pytest
 
@@ -265,7 +266,8 @@ def test_peek_does_not_mutate_queue() -> None:
 
 def test_order_factory_used_for_random_modes() -> None:
     """Взвешенная фабрика ORDER задаёт порядок только в random-режимах."""
-    factory = lambda ids: list(reversed(ids))
+    def factory(ids: Sequence[int]) -> list[int]:
+        return list(reversed(ids))
 
     random_queue = PlaybackQueue([10, 20, 30], ORDER_RANDOM_NO_REPEAT,
                                  random.Random(1), factory)

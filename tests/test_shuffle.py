@@ -126,6 +126,22 @@ def test_recency_direction_direct_vs_inverse() -> None:
     assert compute_weights(no_history, SMART_DIRECT, now=NOW) == [1.0, 1.0]
 
 
+def test_nan_play_count_is_safe() -> None:
+    scores = [TrackScore(1, float('nan'), NOW),  # type: ignore[arg-type]
+              TrackScore(2, 0, NOW)]
+    weights = compute_weights(scores, SMART_DIRECT, now=NOW)
+    assert all(math.isfinite(weight) and weight > 0 for weight in weights)
+
+
+def test_tiny_temperature_is_clamped() -> None:
+    weights = compute_weights(_scores(), SMART_DIRECT,
+                              temperature=1e-300, now=NOW)
+    assert all(math.isfinite(weight) and weight > 0 for weight in weights)
+    assert weighted_shuffle([10, 20], _scores(), SMART_DIRECT,
+                            temperature=1e-300, rng=random.Random(1),
+                            now=NOW) in ([10, 20], [20, 10])
+
+
 def test_invalid_mode_temperature_and_window_are_safe() -> None:
     scores = _scores()
     assert compute_weights(scores, 'unknown', now=NOW) == [1.0, 1.0]

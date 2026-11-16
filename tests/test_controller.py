@@ -11,6 +11,7 @@ from services.controller import PlaybackController
 from services.db import Database
 from services.queue import (
     ORDER_RANDOM_NO_REPEAT,
+    ORDER_RANDOM_REPEAT,
     ORDER_SEQUENTIAL,
     ORDER_SEQUENTIAL_LOOP,
 )
@@ -490,6 +491,76 @@ def test_smart_shuffle_drives_queue_order(
     inverse.configure_smart_shuffle(SMART_INVERSE, 0.5, 30)
     inverse.play_playlist(playlist_id)
     assert inverse.current_track['id'] == light  # редко и старо -> первый
+
+
+def test_smart_shuffle_toggle_affects_active_queue(
+        qapp, db: Database, make_controller, make_wav) -> None:
+    """Переключатель OFF/ON влияет на уже созданную случайную очередь."""
+    heavy = _add_track(db, make_wav(Path('act_heavy.wav')), 'ActiveHeavy')
+    light = _add_track(db, make_wav(Path('act_light.wav')), 'ActiveLight')
+    now = datetime.now(timezone.utc)
+    with db.transaction() as tx:
+        for track_id in (heavy, light):
+            tx.execute('INSERT INTO play_stats (track_id) VALUES (?)',
+                       (track_id,))
+        tx.execute('UPDATE play_stats SET play_count = 1000, '
+                   'last_played_at = ? WHERE track_id = ?',
+                   (now.isoformat().replace('+00:00', 'Z'), heavy))
+        tx.execute('UPDATE play_stats SET play_count = 0, '
+                   'last_played_at = ? WHERE track_id = ?',
+                   ((now - timedelta(days=1000)).isoformat().replace(
+                       '+00:00', 'Z'), light))
+    playlist_id = _add_playlist(db, 'Active', ORDER_RANDOM_REPEAT,
+                                [('track', heavy), ('track', light)])
+    controller, _, _ = make_controller(seed=3)
+    controller.configure_smart_shuffle(SMART_DIRECT, 0.5, 30)
+    controller.play_playlist(playlist_id)
+
+    def picks(count: int) -> list[int]:
+        result = []
+        for _ in range(count):
+            controller.next_track()
+            result.append(controller.current_track['id'])
+        return result
+
+    assert set(picks(20)) == {heavy}  # пока включён direct — только тяжёлый
+    controller.configure_smart_shuffle('off', 0.5, 30)
+    assert light in picks(60)         # после OFF — равномерный выбор
+
+
+def test_temperature_change_affects_active_queue(
+        qapp, db: Database, make_controller, make_wav) -> None:
+    """Изменение температуры действует на последующие выборы очереди."""
+    t1 = _add_track(db, make_wav(Path('temp1.wav')), 'Temp1')
+    t2 = _add_track(db, make_wav(Path('temp2.wav')), 'Temp2')
+    now = datetime.now(timezone.utc)
+    with db.transaction() as tx:
+        for track_id in (t1, t2):
+            tx.execute('INSERT INTO play_stats (track_id) VALUES (?)',
+                       (track_id,))
+        tx.execute('UPDATE play_stats SET play_count = 1, '
+                   'last_played_at = ? WHERE track_id = ?',
+                   (now.isoformat().replace('+00:00', 'Z'), t1))
+        tx.execute('UPDATE play_stats SET play_count = 0, '
+                   'last_played_at = ? WHERE track_id = ?',
+                   ((now - timedelta(days=90)).isoformat().replace(
+                       '+00:00', 'Z'), t2))
+    playlist_id = _add_playlist(db, 'Temp', ORDER_RANDOM_REPEAT,
+                                [('track', t1), ('track', t2)])
+    controller, _, _ = make_controller(seed=5)
+    controller.configure_smart_shuffle(SMART_DIRECT, 0.1, 30)
+    controller.play_playlist(playlist_id)
+
+    def picks(count: int) -> set[int]:
+        found: set[int] = set()
+        for _ in range(count):
+            controller.next_track()
+            found.add(controller.current_track['id'])
+        return found
+
+    assert picks(30) == {t1}            # низкая T — жёсткий выбор
+    controller.configure_smart_shuffle(SMART_DIRECT, 3.0, 30)
+    assert t2 in picks(80)              # высокая T — разброс появился
 
 
 def test_current_track_details(qapp, db: Database, make_controller,

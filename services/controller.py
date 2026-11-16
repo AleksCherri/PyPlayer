@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Sequence
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
@@ -58,7 +59,7 @@ from services.shuffle import (
     SMART_MODES,
     SMART_OFF,
     TrackScore,
-    smart_order_factory,
+    weighted_shuffle,
 )
 
 _RANDOM_MODES = frozenset({ORDER_RANDOM_NO_REPEAT, ORDER_RANDOM_REPEAT,
@@ -220,16 +221,32 @@ class PlaybackController(QObject):
         return {track_id: history.get(track_id, TrackScore(track_id))
                 for track_id in track_ids}
 
+    def _dynamic_order_factory(self, ids: Sequence[int]) -> list[int]:
+        """Свежий порядок при каждом проходе/выборе случайной очереди.
+
+        Режим, температура, окно и история читаются ЗДЕСЬ И СЕЙЧАС (а не
+        снимком при создании очереди), поэтому переключатель в хедере и
+        изменение температуры действуют на активный плейлист сразу.
+        """
+        track_ids = list(ids)
+        history = self._fetch_scores(track_ids)
+        return weighted_shuffle(
+            track_ids, [history[tid] for tid in track_ids],
+            self._smart_mode, self._smart_temperature,
+            self._recency_window_days, self._rng)
+
     def _make_queue(self, track_ids: list[int],
                     order_mode: str) -> PlaybackQueue:
-        """Очередь с умным порядком для случайных режимов (если включён)."""
-        if self._smart_mode == SMART_OFF or order_mode not in _RANDOM_MODES \
-                or len(track_ids) <= 1:
+        """Очередь: для random-режимов — динамический взвешенный порядок.
+
+        OFF тоже идёт через фабрику: weighted_shuffle в OFF-ветке делает
+        обычный равномерный shuffle, так что переключение OFF <-> ON
+        работает и на уже существующей очереди.
+        """
+        if order_mode not in _RANDOM_MODES:
             return PlaybackQueue(track_ids, order_mode, self._rng)
-        factory = smart_order_factory(
-            self._fetch_scores(track_ids), self._smart_mode,
-            self._smart_temperature, self._recency_window_days, self._rng)
-        return PlaybackQueue(track_ids, order_mode, self._rng, factory)
+        return PlaybackQueue(track_ids, order_mode, self._rng,
+                             self._dynamic_order_factory)
 
     @Slot(float)
     def seek(self, seconds: float) -> None:

@@ -89,18 +89,32 @@ def compute_weights(
     count = len(scores)
     if mode not in (SMART_DIRECT, SMART_INVERSE) or count == 0:
         return [1.0] * count
-    temp = float(temperature)
+    try:
+        temp = float(temperature)
+    except (TypeError, ValueError):
+        temp = DEFAULT_TEMPERATURE
     if not math.isfinite(temp) or temp <= 0:
         temp = DEFAULT_TEMPERATURE
+    # Ограничиваем температуру: T=1e-300 даёт exponent=1e300 и OverflowError
+    # при возведении в степень. [0.01, 100] — практический рабочий диапазон.
+    temp = min(max(temp, 0.01), 100.0)
     current = now or datetime.now(timezone.utc)
     exponent = 1.0 / temp
     weights: list[float] = []
     for score in scores:
-        listens = 1.0 + max(0, int(score.play_count or 0))
+        raw_count = score.play_count or 0
+        try:
+            count = int(raw_count) if math.isfinite(float(raw_count)) else 0
+        except (TypeError, ValueError, OverflowError):
+            count = 0
+        listens = 1.0 + max(0, count)
         rec = _recency(score, current, int(recency_window_days))
         raw = listens * (1.0 + rec) if mode == SMART_DIRECT \
             else (2.0 - rec) / listens
-        weight = raw ** exponent
+        try:
+            weight = raw ** exponent
+        except OverflowError:
+            weight = 1.0  # вырожденный случай -> равномерный вес
         weights.append(weight if math.isfinite(weight) and weight > 0
                        else 0.0)
     if not any(weights):  # все нули — fall back на равномерные веса
