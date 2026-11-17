@@ -295,6 +295,18 @@ ApplicationWindow {
                         Drag.mimeData: ({
                             "application/x-pyplayer-item": String(model.position)
                         })
+                        MouseArea {
+                            id: itemMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            drag.target: parent
+                            drag.axis: Drag.XAndYAxis
+                            onClicked: (mouse) => {
+                                if (mouse.button === Qt.RightButton)
+                                    itemMenu.popup()
+                            }
+                        }
                         RowLayout {
                             anchors.fill: parent
                             anchors.margins: 3
@@ -310,17 +322,18 @@ ApplicationWindow {
                                 color: "#777777"
                                 elide: Text.ElideRight
                             }
-                        }
-                        MouseArea {
-                            id: itemMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            acceptedButtons: Qt.LeftButton | Qt.RightButton
-                            drag.target: parent
-                            drag.axis: Drag.XAndYAxis
-                            onClicked: (mouse) => {
-                                if (mouse.button === Qt.RightButton)
-                                    itemMenu.popup()
+                            // Удобная кнопка удаления: клик по строке вокруг
+                            // неё попадает в itemMouse (тексты мышь не
+                            // принимают), а по самой кнопке — в кнопку.
+                            ToolButton {
+                                text: "✕"
+                                width: 24
+                                height: 24
+                                flat: true
+                                ToolTip.visible: hovered
+                                ToolTip.text: qsTr("Удалить из плейлиста")
+                                onClicked: playlistItems.removeAt(
+                                               model.position)
                             }
                         }
                         Menu {
@@ -461,6 +474,30 @@ ApplicationWindow {
                                         model.format).arg(model.sampleRate)
                                     propsPopup.open()
                                 }
+                            }
+                        }
+                        // Удобная кнопка добавления в выбранный плейлист
+                        // (объявлена после trackMouse — поверх, клик по ней
+                        // не перехватывается областью перетаскивания).
+                        ToolButton {
+                            anchors.right: parent.right
+                            anchors.rightMargin: 6
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 28
+                            height: 28
+                            flat: true
+                            text: "＋"
+                            ToolTip.visible: hovered
+                            ToolTip.text: root.selectedPlaylist > 0
+                                          ? qsTr("Добавить в «%1»").arg(
+                                                root.selectedPlaylistName)
+                                          : qsTr("Сначала выберите плейлист")
+                            onClicked: {
+                                if (root.selectedPlaylist > 0)
+                                    playlistItems.addTrack(model.id)
+                                else
+                                    root.statusText =
+                                        qsTr("Сначала выберите плейлист")
                             }
                         }
                     }
