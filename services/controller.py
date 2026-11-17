@@ -107,6 +107,7 @@ class PlaybackController(QObject):
         """Карточка текущего трека (строка tracks) или None."""
         return self._current_track
 
+    @Slot(int)
     def play(self, track_id: int) -> None:
         """Играть трек по id из библиотеки.
 
@@ -123,6 +124,7 @@ class PlaybackController(QObject):
         self._playlist_id = None
         self._playlist_name = ''
 
+    @Slot(int)
     def play_playlist(self, playlist_id: int) -> None:
         """Играть плейлист: склейка -> очередь с режимом -> первый трек.
 
@@ -148,19 +150,23 @@ class PlaybackController(QObject):
         self.playlistChanged.emit(playlist_id, info.name)
         self._advance()
 
+    @Slot()
     def pause(self) -> None:
         """Пауза (аккумулятор движка замирает — в статистику не пишем)."""
         self._engine.pause()
 
+    @Slot()
     def resume(self) -> None:
         """Продолжить после паузы."""
         self._engine.resume()
 
+    @Slot()
     def stop(self) -> None:
         """Остановка: текущий трек сбрасывается в статистику."""
         self._flush_current()
         self._stop_playback()
 
+    @Slot()
     def next_track(self) -> None:
         """Следующий трек по режиму порядка (None в конце — стоп)."""
         if self._queue is None:
@@ -168,6 +174,7 @@ class PlaybackController(QObject):
         self._flush_current()
         self._advance()
 
+    @Slot()
     def prev_track(self) -> None:
         """Предыдущий трек по режиму порядка (None в начале — ничего).
 
@@ -185,6 +192,7 @@ class PlaybackController(QObject):
         self._flush_current()
         self._start_track_id(track_id)
 
+    @Slot(float)
     def set_volume(self, volume: float) -> None:
         """Громкость 0..1 (passthrough в движок; NaN игнорируется им)."""
         self._engine.set_volume(volume)

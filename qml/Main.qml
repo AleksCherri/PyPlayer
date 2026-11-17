@@ -100,7 +100,8 @@ ApplicationWindow {
                 id: smartShuffleBox
                 model: [qsTr("Выкл"), qsTr("Прямая"), qsTr("Обратная")]
                 property var values: ["off", "direct", "inverse"]
-                currentIndex: Math.max(0, values.indexOf(settings.smartShuffle))
+                currentIndex: Math.max(
+                    0, values.indexOf(settings ? settings.smartShuffle : "off"))
                 onActivated: settings.setSmartShuffle(values[currentIndex])
             }
             Button {
@@ -167,7 +168,7 @@ ApplicationWindow {
                 // родителей, а не соседним элементам.
                 DropArea {
                     anchors.fill: parent
-                    onDropped: {
+                    onDropped: (drop) => {
                         var tid = Number(drop.getDataAsString(
                                              "application/x-pyplayer-track"))
                         if (tid > 0 && root.selectedPlaylist > 0)
@@ -219,18 +220,24 @@ ApplicationWindow {
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                onClicked: {
+                                onClicked: (mouse) => {
                                     if (mouse.button === Qt.RightButton) {
                                         plistMenu.popup()
                                         return
                                     }
+                                    // Важно: setPlaylist() синхронно
+                                    // перезагружает playlistModel, из-за
+                                    // чего делегат уничтожается прямо
+                                    // посреди этого обработчика. Все
+                                    // обращения к model и обновления UI
+                                    // поэтому делаем ДО него.
                                     root.selectedPlaylist = model.playlistId
                                     root.selectedPlaylistName = model.name
-                                    playlistItems.setPlaylist(model.playlistId)
                                     root.currentMode = model.orderMode
                                     statsText.text = root.formatStats(
                                         playlistModel.stats(model.playlistId))
                                     root.refreshTrackLabels()
+                                    playlistItems.setPlaylist(model.playlistId)
                                 }
                                 onDoubleClicked: player.play_playlist(
                                                      model.playlistId)
@@ -268,7 +275,7 @@ ApplicationWindow {
                     delegate: DropArea {
                         width: itemsView.width
                         height: 30
-                        onDropped: {
+                        onDropped: (drop) => {
                             var data = drop.getDataAsString(
                                            "application/x-pyplayer-item")
                             if (data !== "") {
@@ -311,7 +318,7 @@ ApplicationWindow {
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
                             drag.target: parent
                             drag.axis: Drag.XAndYAxis
-                            onClicked: {
+                            onClicked: (mouse) => {
                                 if (mouse.button === Qt.RightButton)
                                     itemMenu.popup()
                             }
@@ -366,7 +373,10 @@ ApplicationWindow {
             }
             Label {
                 objectName: "foundLabel"
-                text: qsTr("Найдено: %1").arg(trackFilter.count())
+                // trackFilter кратко null при разборе интерфейса (закрытие
+                // приложения) — привязка должна это переживать.
+                text: qsTr("Найдено: %1").arg(
+                          trackFilter ? trackFilter.count() : 0)
                 font.pixelSize: 11
             }
             Rectangle {
@@ -419,7 +429,7 @@ ApplicationWindow {
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
                             drag.target: parent
                             drag.axis: Drag.XAndYAxis
-                            onClicked: {
+                            onClicked: (mouse) => {
                                 if (mouse.button === Qt.RightButton)
                                     trackMenu.popup()
                             }
@@ -815,13 +825,13 @@ ApplicationWindow {
                 id: temperatureSlider
                 from: 0.1
                 to: 2.0
-                value: settings.temperature
+                value: settings ? settings.temperature : 1.0
                 Layout.fillWidth: true
                 onMoved: settings.setTemperature(value)
             }
             Label {
                 text: qsTr("Максимальная глубина плейлиста: %1").arg(
-                          settings.maxPlaylistDepth())
+                          settings ? settings.maxPlaylistDepth() : 5)
                 font.pixelSize: 11
                 color: "#666666"
             }
